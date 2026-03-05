@@ -2,7 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { PrivateKey, Transaction, P2PKH } from '@bsv/sdk'
 import { buildRegistrationTx, buildDeregistrationTx } from '../lib/registration.js'
-import { decodePayload, extractOpReturnData, PROTOCOL_PREFIX } from '../lib/cbor.js'
+import { decodePayload, extractOpReturnData, PROTOCOL_PREFIX, BEACON_ADDRESS, BEACON_SATOSHIS } from '../lib/cbor.js'
 
 // Generate a throwaway key for testing
 const testKey = PrivateKey.fromRandom()
@@ -43,13 +43,17 @@ describe('Registration tx builder', () => {
     assert.equal(typeof result.txHex, 'string')
     assert.equal(result.txid.length, 64, 'txid should be 64 hex chars')
 
-    // Parse the tx and verify OP_RETURN structure
+    // Parse the tx and verify output structure: OP_RETURN + beacon + change
     const tx = Transaction.fromHex(result.txHex)
-    assert.ok(tx.outputs.length >= 2, 'should have at least 2 outputs')
+    assert.ok(tx.outputs.length >= 3, 'should have at least 3 outputs (OP_RETURN + beacon + change)')
 
     // First output should be OP_RETURN (0 satoshis)
     const opReturnOutput = tx.outputs[0]
     assert.equal(opReturnOutput.satoshis, 0, 'OP_RETURN output should be 0 sats')
+
+    // Second output should be beacon dust (100 satoshis)
+    const beaconOutput = tx.outputs[1]
+    assert.equal(beaconOutput.satoshis, BEACON_SATOSHIS, 'beacon output should be 100 sats')
 
     // Verify the script contains our protocol prefix
     const scriptHex = opReturnOutput.lockingScript.toHex()
@@ -78,6 +82,9 @@ describe('Registration tx builder', () => {
     assert.ok(result.txid)
 
     const tx = Transaction.fromHex(result.txHex)
+    assert.ok(tx.outputs.length >= 3, 'deregistration should also have beacon output')
+    assert.equal(tx.outputs[1].satoshis, BEACON_SATOSHIS, 'beacon output should be 100 sats')
+
     const { cborBytes } = extractOpReturnData(tx.outputs[0].lockingScript)
     const decoded = decodePayload(cborBytes)
     assert.equal(decoded.action, 'deregister')

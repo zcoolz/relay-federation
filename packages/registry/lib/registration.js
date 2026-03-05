@@ -1,5 +1,5 @@
 import { Transaction, P2PKH, PrivateKey, SatoshisPerKilobyte, LockingScript, OP } from '@bsv/sdk'
-import { encodeRegistration, encodeDeregistration, PROTOCOL_PREFIX } from './cbor.js'
+import { encodeRegistration, encodeDeregistration, PROTOCOL_PREFIX, BEACON_ADDRESS, BEACON_SATOSHIS } from './cbor.js'
 
 /**
  * Build an OP_RETURN transaction for bridge registration.
@@ -96,6 +96,8 @@ async function buildOpReturnTx (privateKey, utxos, cborBytes) {
   ])
 
   tx.addOutput({ lockingScript: opReturnScript, satoshis: 0 })
+  // Beacon output: 100 sat dust to deterministic registry address for chain scanning
+  tx.addOutput({ lockingScript: p2pkh.lock(BEACON_ADDRESS), satoshis: BEACON_SATOSHIS })
   tx.addOutput({ lockingScript: p2pkh.lock(address), change: true })
 
   await tx.fee(new SatoshisPerKilobyte(1000))

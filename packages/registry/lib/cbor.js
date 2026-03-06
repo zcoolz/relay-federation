@@ -1,21 +1,8 @@
 import { encode, decode } from 'cborg'
-
-const PROTOCOL_PREFIX = 'indelible.bridge-registry'
-
-/**
- * Deterministic beacon address derived from SHA-256(PROTOCOL_PREFIX).
- * All registration/deregistration txs send BEACON_SATOSHIS dust here
- * so the chain scanner can find them via address history.
- *
- * Derivation: SHA-256('indelible.bridge-registry') → first 20 bytes → P2PKH address
- * Result: 1KhH4VshyN8PnzxbTSjiojcQbbABNSZyzR (deterministic, reproducible)
- */
-const BEACON_ADDRESS = '1KhH4VshyN8PnzxbTSjiojcQbbABNSZyzR'
-const BEACON_SATOSHIS = 100
+import { PROTOCOL_PREFIX, BEACON_ADDRESS, BEACON_SATOSHIS, VALID_CAPABILITIES } from '@relay-federation/common/protocol'
 
 const REQUIRED_REGISTER_FIELDS = ['action', 'endpoint', 'pubkey', 'capabilities', 'versions', 'network_version', 'stake_txid', 'mesh_id', 'timestamp']
 const REQUIRED_DEREGISTER_FIELDS = ['action', 'pubkey', 'reason', 'timestamp']
-const VALID_CAPABILITIES = ['tx_relay', 'header_sync', 'broadcast', 'address_history']
 
 /**
  * Encode a bridge registration payload to CBOR bytes.

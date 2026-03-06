@@ -1,4 +1,6 @@
-import { extractOpReturnData, decodePayload, PROTOCOL_PREFIX, BEACON_ADDRESS } from './cbor.js'
+import { extractOpReturnData, decodePayload } from './cbor.js'
+import { PROTOCOL_PREFIX, BEACON_ADDRESS } from '@relay-federation/common/protocol'
+import { fetchAddressHistory, fetchTxHex } from '@relay-federation/common/network'
 import { Transaction } from '@bsv/sdk'
 
 /**
@@ -20,7 +22,7 @@ export async function scanRegistry (opts) {
   const { spvEndpoint, apiKey } = opts
 
   // Step 1: Get address history for the beacon address
-  const history = await getAddressHistory(spvEndpoint, apiKey, BEACON_ADDRESS)
+  const history = await fetchAddressHistory(spvEndpoint, apiKey, BEACON_ADDRESS)
 
   // Step 2: Fetch each tx and parse OP_RETURN
   const entries = []
@@ -46,27 +48,6 @@ export async function scanRegistry (opts) {
 }
 
 /**
- * Fetch address history from the SPV bridge.
- *
- * @param {string} baseUrl
- * @param {string} apiKey
- * @param {string} address
- * @returns {Promise<Array<{tx_hash: string, height: number}>>}
- */
-async function getAddressHistory (baseUrl, apiKey, address) {
-  const url = `${baseUrl}/api/address/${address}/history`
-  const res = await fetch(url, {
-    headers: { 'X-API-Key': apiKey }
-  })
-
-  if (!res.ok) {
-    throw new Error(`address history failed: ${res.status} ${res.statusText}`)
-  }
-
-  return res.json()
-}
-
-/**
  * Fetch a transaction and attempt to parse its OP_RETURN as a registry entry.
  * Returns null if the tx doesn't contain a valid registry OP_RETURN.
  *
@@ -76,16 +57,7 @@ async function getAddressHistory (baseUrl, apiKey, address) {
  * @returns {Promise<object|null>} Decoded CBOR payload or null
  */
 async function parseRegistryTx (baseUrl, apiKey, txid) {
-  const url = `${baseUrl}/api/tx/${txid}/hex`
-  const res = await fetch(url, {
-    headers: { 'X-API-Key': apiKey }
-  })
-
-  if (!res.ok) {
-    throw new Error(`tx fetch failed: ${res.status} ${res.statusText}`)
-  }
-
-  const rawHex = await res.text()
+  const rawHex = await fetchTxHex(baseUrl, apiKey, txid)
 
   // Parse the raw transaction to find OP_RETURN output
   const tx = Transaction.fromHex(rawHex)
@@ -107,4 +79,4 @@ async function parseRegistryTx (baseUrl, apiKey, txid) {
   return decodePayload(cborBytes)
 }
 
-export { getAddressHistory, parseRegistryTx, BEACON_ADDRESS }
+export { parseRegistryTx, BEACON_ADDRESS }

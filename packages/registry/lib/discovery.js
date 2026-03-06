@@ -1,3 +1,5 @@
+import { uint8ToHex } from '@relay-federation/common/crypto'
+
 /**
  * Peer discovery — resolve scanner output into a list of active bridges.
  *
@@ -79,7 +81,3 @@ export function filterByMesh (peers, meshId) {
   return peers.filter(p => p.meshId === meshId)
 }
 
-/** Convert Uint8Array to hex string */
-function uint8ToHex (arr) {
-  return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('')
-}

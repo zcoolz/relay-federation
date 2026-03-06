@@ -1,0 +1,29 @@
+{
+  "name": "@relay-federation/common",
+  "version": "0.1.0",
+  "description": "Shared modules — crypto, network, protocol constants",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./protocol": "./lib/protocol.js",
+    "./crypto": "./lib/crypto.js",
+    "./network": "./lib/network.js"
+  },
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "@bsv/sdk": "^1.10.1"
+  },
+  "license": "MIT",
+  "author": "zcooL",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zcoolz/relay-federation",
+    "directory": "packages/common"
+  },
+  "keywords": ["bsv", "spv", "relay", "federation", "bitcoin"],
+  "engines": { "node": ">=18" },
+  "files": ["index.js", "lib/"]
+}

@@ -1,17 +1,41 @@
 {
   "name": "@relay-federation/bridge",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Bridge server — WebSocket peering, header sync, tx relay, CLI",
   "type": "module",
-  "main": "index.js",
   "bin": {
-    "relay-bridge": "./cli.js"
+    "relay-bridge": "cli.js"
   },
   "scripts": {
     "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "@bsv/sdk": "^1.10.1",
+    "@relay-federation/common": "^0.1.0",
+    "level": "^10.0.0",
     "ws": "^8.19.0"
-  }
+  },
+  "license": "MIT",
+  "author": "zcooL",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zcoolz/relay-federation.git",
+    "directory": "packages/bridge"
+  },
+  "keywords": [
+    "bsv",
+    "spv",
+    "relay",
+    "bridge",
+    "federation",
+    "bitcoin",
+    "mesh"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "cli.js",
+    "lib/"
+  ]
 }

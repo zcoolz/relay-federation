@@ -32,7 +32,10 @@ export async function initConfig (dir = DEFAULT_DIR) {
     spvEndpoint: 'https://relay.indelible.one',
     apiKey: '',
     port: 8333,
-    maxPeers: 20
+    statusPort: 9333,
+    maxPeers: 20,
+    dataDir: join(dir, 'data'),
+    seedPeers: []
   }
 
   await mkdir(dir, { recursive: true })

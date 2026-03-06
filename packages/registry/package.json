@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@bsv/sdk": "^1.10.1",
+    "@relay-federation/common": "^0.1.0",
     "cborg": "^4.5.8"
   }
 }

@@ -1,34 +1,7 @@
 import { randomBytes } from 'node:crypto'
-import { PrivateKey, PublicKey, Hash, Signature } from '@bsv/sdk'
-
-const SUPPORTED_VERSIONS = ['1.0']
-const HANDSHAKE_TIMEOUT_MS = 10000
-
-/**
- * Sign a nonce with a private key using ECDSA (SHA-256 hash + sign).
- * @param {string} nonceHex — 32-byte nonce as hex
- * @param {PrivateKey} privKey
- * @returns {string} DER-encoded signature as hex
- */
-function signNonce (nonceHex, privKey) {
-  const hash = Hash.sha256(Buffer.from(nonceHex, 'hex'))
-  const sig = privKey.sign(hash)
-  return sig.toDER('hex')
-}
-
-/**
- * Verify a nonce signature against a public key.
- * @param {string} nonceHex — 32-byte nonce as hex
- * @param {string} sigDerHex — DER-encoded signature as hex
- * @param {string} pubkeyHex — Compressed pubkey as hex
- * @returns {boolean}
- */
-function verifyNonce (nonceHex, sigDerHex, pubkeyHex) {
-  const hash = Hash.sha256(Buffer.from(nonceHex, 'hex'))
-  const sig = Signature.fromDER(sigDerHex, 'hex')
-  const pubKey = PublicKey.fromString(pubkeyHex)
-  return pubKey.verify(hash, sig)
-}
+import { PrivateKey } from '@bsv/sdk'
+import { signHash, verifyHash } from '@relay-federation/common/crypto'
+import { SUPPORTED_VERSIONS, HANDSHAKE_TIMEOUT_MS } from '@relay-federation/common/protocol'
 
 /**
  * Create a cryptographic handshake helper.
@@ -100,7 +73,7 @@ export function createHandshake (opts) {
       const selectedVersion = mutual.sort().pop() // highest mutual version
 
       // Sign the initiator's nonce to prove our identity
-      const signature = signNonce(hello.nonce, privKey)
+      const signature = signHash(hello.nonce, privKey)
       const responderNonce = randomBytes(32).toString('hex')
 
       return {
@@ -141,7 +114,7 @@ export function createHandshake (opts) {
 
       // Verify responder signed our nonce
       try {
-        const valid = verifyNonce(ourNonce, response.signature, response.pubkey)
+        const valid = verifyHash(ourNonce, response.signature, response.pubkey)
         if (!valid) {
           return { error: 'invalid_signature' }
         }
@@ -150,7 +123,7 @@ export function createHandshake (opts) {
       }
 
       // Sign responder's nonce
-      const signature = signNonce(response.nonce, privKey)
+      const signature = signHash(response.nonce, privKey)
 
       return {
         message: {
@@ -176,7 +149,7 @@ export function createHandshake (opts) {
       }
 
       try {
-        const valid = verifyNonce(ourNonce, verify.signature, peerPubkeyHex)
+        const valid = verifyHash(ourNonce, verify.signature, peerPubkeyHex)
         if (!valid) {
           return { error: 'invalid_signature' }
         }

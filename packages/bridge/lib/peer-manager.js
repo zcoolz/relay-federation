@@ -151,8 +151,8 @@ export class PeerManager extends EventEmitter {
       this._server.on('error', (err) => reject(err))
 
       this._server.on('connection', (ws) => {
-        // Inbound connections need to identify themselves via handshake.
-        // For now, we hold the socket and wait for a 'hello' message.
+        // Inbound connections: full challenge-response handshake if available,
+        // otherwise fall back to basic hello exchange.
         const timeout = setTimeout(() => {
           ws.close() // No hello within 10 seconds
         }, 10000)
@@ -161,10 +161,50 @@ export class PeerManager extends EventEmitter {
           clearTimeout(timeout)
           try {
             const msg = JSON.parse(data.toString())
-            if (msg.type === 'hello' && msg.pubkey && msg.endpoint) {
+            if (msg.type !== 'hello' || !msg.pubkey || !msg.endpoint) {
+              ws.close()
+              return
+            }
+
+            // If cryptographic handshake is available, use it
+            if (opts.handshake && msg.nonce && Array.isArray(msg.versions)) {
+              const result = opts.handshake.handleHello(msg)
+              if (result.error) {
+                ws.send(JSON.stringify({ type: 'error', error: result.error }))
+                ws.close()
+                return
+              }
+
+              // Send challenge_response
+              ws.send(JSON.stringify(result.message))
+
+              // Wait for verify
+              const verifyTimeout = setTimeout(() => { ws.close() }, 10000)
+              ws.once('message', (data2) => {
+                clearTimeout(verifyTimeout)
+                try {
+                  const verifyMsg = JSON.parse(data2.toString())
+                  const verifyResult = opts.handshake.handleVerify(verifyMsg, result.nonce, result.peerPubkey)
+                  if (verifyResult.error) {
+                    ws.send(JSON.stringify({ type: 'error', error: verifyResult.error }))
+                    ws.close()
+                    return
+                  }
+
+                  // Handshake complete — accept peer
+                  const conn = this.acceptPeer(ws, result.peerPubkey, msg.endpoint)
+                  if (conn) {
+                    this.emit('peer:connect', { pubkeyHex: result.peerPubkey, endpoint: msg.endpoint })
+                    conn.emit('message', msg)
+                  }
+                } catch {
+                  ws.close()
+                }
+              })
+            } else {
+              // Legacy hello — accept without crypto verification
               const conn = this.acceptPeer(ws, msg.pubkey, msg.endpoint)
               if (conn) {
-                // Send our identity back so the client knows who we are
                 if (opts.pubkeyHex && opts.endpoint) {
                   ws.send(JSON.stringify({
                     type: 'hello',
@@ -173,14 +213,11 @@ export class PeerManager extends EventEmitter {
                   }))
                 }
                 this.emit('peer:connect', { pubkeyHex: msg.pubkey, endpoint: msg.endpoint })
-                // Forward the hello as a regular message too
                 conn.emit('message', msg)
               }
-            } else {
-              ws.close() // Invalid hello
             }
           } catch {
-            ws.close() // Invalid JSON
+            ws.close()
           }
         })
       })

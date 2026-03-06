@@ -62,9 +62,11 @@ function render(s) {
     for (const p of s.peers.list) {
       const dot = p.connected ? 'green' : 'red';
       const tag = p.connected ? 'connected' : 'disconnected';
+      const score = p.score !== undefined ? ' score:' + p.score : '';
+      const health = p.health && p.health !== 'online' ? ' [' + p.health + ']' : '';
       peers += '<div class="peer-row"><span class="dot ' + dot + '"></span>'
         + '<span class="mono">' + p.pubkeyHex.slice(0, 16) + '...</span> '
-        + (p.endpoint || '') + ' <span style="color:#484f58">(' + tag + ')</span></div>';
+        + (p.endpoint || '') + ' <span style="color:#484f58">(' + tag + score + health + ')</span></div>';
     }
   }
   const dot = s.peers.connected > 0 ? 'green' : (s.peers.max > 0 ? 'yellow' : 'red');
@@ -121,6 +123,8 @@ export class StatusServer {
     this._headerRelay = opts.headerRelay || null
     this._txRelay = opts.txRelay || null
     this._config = opts.config || {}
+    this._scorer = opts.scorer || null
+    this._peerHealth = opts.peerHealth || null
     this._startedAt = Date.now()
     this._server = null
   }
@@ -133,11 +137,18 @@ export class StatusServer {
     const peers = []
     if (this._peerManager) {
       for (const [pubkeyHex, conn] of this._peerManager.peers) {
-        peers.push({
+        const entry = {
           pubkeyHex,
           endpoint: conn.endpoint,
           connected: !!conn.connected
-        })
+        }
+        if (this._scorer) {
+          entry.score = Math.round(this._scorer.getScore(pubkeyHex) * 100) / 100
+        }
+        if (this._peerHealth) {
+          entry.health = this._peerHealth.getStatus(pubkeyHex)
+        }
+        peers.push(entry)
       }
     }
 

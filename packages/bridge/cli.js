@@ -165,6 +165,97 @@ async function cmdStart () {
   const headerRelay = new HeaderRelay(peerManager)
   const txRelay = new TxRelay(peerManager)
 
+  // ── 2b. Phase 2: Security layer ────────────────────────────
+  const { PeerScorer } = await import('./lib/peer-scorer.js')
+  const { ScoreActions } = await import('./lib/score-actions.js')
+  const { DataValidator } = await import('./lib/data-validator.js')
+  const { PeerHealth } = await import('./lib/peer-health.js')
+  const { AnchorManager } = await import('./lib/anchor-manager.js')
+  const { createHandshake } = await import('./lib/handshake.js')
+
+  const scorer = new PeerScorer()
+  const scoreActions = new ScoreActions(scorer, peerManager)
+  const dataValidator = new DataValidator(peerManager, scorer)
+  const peerHealth = new PeerHealth()
+  const anchorManager = new AnchorManager(peerManager, {
+    anchors: config.anchorBridges || []
+  })
+
+  const handshake = createHandshake({
+    wif: config.wif,
+    pubkeyHex: config.pubkeyHex,
+    endpoint: config.endpoint
+  })
+
+  // Wire peer health tracking
+  peerManager.on('peer:connect', ({ pubkeyHex }) => {
+    peerHealth.recordSeen(pubkeyHex)
+  })
+
+  peerManager.on('peer:disconnect', ({ pubkeyHex }) => {
+    peerHealth.recordOffline(pubkeyHex)
+  })
+
+  // Wire peer:message → health.recordSeen (any message = peer is alive)
+  peerManager.on('peer:message', ({ pubkeyHex }) => {
+    peerHealth.recordSeen(pubkeyHex)
+  })
+
+  // Ping infrastructure — 60s interval, measures latency for scoring
+  const PING_INTERVAL_MS = 60000
+  const pendingPings = new Map() // pubkeyHex → timestamp
+
+  peerManager.on('peer:message', ({ pubkeyHex, message }) => {
+    if (message.type === 'ping') {
+      // Respond with pong
+      const conn = peerManager.peers.get(pubkeyHex)
+      if (conn) conn.send({ type: 'pong', nonce: message.nonce })
+    } else if (message.type === 'pong') {
+      // Record latency
+      const sentAt = pendingPings.get(pubkeyHex)
+      if (sentAt) {
+        const latency = Date.now() - sentAt
+        pendingPings.delete(pubkeyHex)
+        if (!peerHealth.isInGracePeriod(pubkeyHex)) {
+          scorer.recordPing(pubkeyHex, latency)
+        }
+      }
+    }
+  })
+
+  const pingTimer = setInterval(() => {
+    const nonce = Date.now().toString(36)
+    for (const [pubkeyHex, conn] of peerManager.peers) {
+      if (conn.connected) {
+        // Check for timed-out previous pings
+        if (pendingPings.has(pubkeyHex)) {
+          if (!peerHealth.isInGracePeriod(pubkeyHex)) {
+            scorer.recordPingTimeout(pubkeyHex)
+          }
+          pendingPings.delete(pubkeyHex)
+        }
+        pendingPings.set(pubkeyHex, Date.now())
+        conn.send({ type: 'ping', nonce })
+      }
+    }
+  }, PING_INTERVAL_MS)
+  if (pingTimer.unref) pingTimer.unref()
+
+  // Health check — every 10 minutes, detect inactive peers
+  const HEALTH_CHECK_INTERVAL_MS = 10 * 60 * 1000
+  const healthTimer = setInterval(() => {
+    const { grace, inactive } = peerHealth.checkAll()
+    for (const pk of inactive) {
+      console.log(`Peer inactive (7d+): ${pk.slice(0, 16)}...`)
+    }
+  }, HEALTH_CHECK_INTERVAL_MS)
+  if (healthTimer.unref) healthTimer.unref()
+
+  // Start anchor monitoring
+  anchorManager.startMonitoring()
+
+  console.log(`  Security: scoring, validation, health, anchors active`)
+
   // ── 3. Address watcher — watch our own address ────────────
   const { AddressWatcher } = await import('./lib/address-watcher.js')
   const watcher = new AddressWatcher(txRelay, store)
@@ -187,8 +278,48 @@ async function cmdStart () {
     gossipManager.addSeed(seed)
   }
 
+  // ── Outbound handshake helper ──────────────────────────────
+  function performOutboundHandshake (conn) {
+    const { message: helloMsg, nonce } = handshake.createHello()
+    conn.send(helloMsg)
+
+    const onMessage = (msg) => {
+      if (msg.type === 'challenge_response') {
+        conn.removeListener('message', onMessage)
+        const result = handshake.handleChallengeResponse(msg, nonce)
+        if (result.error) {
+          console.log(`Handshake failed with ${conn.pubkeyHex.slice(0, 16)}...: ${result.error}`)
+          conn.destroy()
+          return
+        }
+        // Re-key if we didn't know their real pubkey
+        if (result.peerPubkey !== conn.pubkeyHex) {
+          peerManager.peers.delete(conn.pubkeyHex)
+          conn.pubkeyHex = result.peerPubkey
+          peerManager.peers.set(result.peerPubkey, conn)
+          console.log(`  Peer identified: ${result.peerPubkey.slice(0, 16)}... (v${result.selectedVersion})`)
+        }
+        // Send verify to complete handshake
+        conn.send(result.message)
+      }
+    }
+    conn.on('message', onMessage)
+
+    // Timeout: if no challenge_response within 10s, drop
+    const timeout = setTimeout(() => {
+      conn.removeListener('message', onMessage)
+      if (!conn.connected) return
+      console.log(`Handshake timeout: ${conn.pubkeyHex.slice(0, 16)}...`)
+      conn.destroy()
+    }, 10000)
+    if (timeout.unref) timeout.unref()
+
+    // Clear timeout if handshake completes or connection closes
+    conn.once('close', () => clearTimeout(timeout))
+  }
+
   // ── 5. Start server ───────────────────────────────────────
-  await peerManager.startServer({ port: config.port, host: '0.0.0.0', pubkeyHex: config.pubkeyHex, endpoint: config.endpoint })
+  await peerManager.startServer({ port: config.port, host: '0.0.0.0', pubkeyHex: config.pubkeyHex, endpoint: config.endpoint, handshake })
   console.log(`Bridge listening on port ${config.port}`)
   console.log(`  Pubkey: ${config.pubkeyHex}`)
   console.log(`  Mesh:   ${config.meshId}`)
@@ -249,10 +380,11 @@ async function cmdStart () {
   // ── 7. Connect to peers ───────────────────────────────────
   let gossipStarted = false
 
-  // Start gossip after hello exchange completes (not on peer:connect,
-  // which fires before hello is sent — causing gossip to race the handshake)
-  peerManager.on('peer:message', ({ pubkeyHex, message }) => {
-    if (!gossipStarted && message.type === 'hello') {
+  // Start gossip after first peer connection completes.
+  // With crypto handshake, peer:connect fires AFTER handshake verification,
+  // so gossip won't race the handshake anymore.
+  peerManager.on('peer:connect', () => {
+    if (!gossipStarted) {
       gossipStarted = true
       gossipManager.start()
       gossipManager.requestPeersFromAll()
@@ -266,13 +398,7 @@ async function cmdStart () {
       console.log(`Discovered peer via gossip: ${pubkeyHex.slice(0, 16)}... ${endpoint}`)
       const conn = peerManager.connectToPeer({ pubkeyHex, endpoint })
       if (conn) {
-        conn.on('open', () => {
-          conn.send({
-            type: 'hello',
-            pubkey: config.pubkeyHex,
-            endpoint: config.endpoint
-          })
-        })
+        conn.on('open', () => performOutboundHandshake(conn))
       }
     }
   })
@@ -285,13 +411,7 @@ async function cmdStart () {
       endpoint: peerArg
     })
     if (conn) {
-      conn.on('open', () => {
-        conn.send({
-          type: 'hello',
-          pubkey: config.pubkeyHex,
-          endpoint: config.endpoint
-        })
-      })
+      conn.on('open', () => performOutboundHandshake(conn))
     }
   } else if (seedPeers.length > 0) {
     // Connect to seed peers (accept both string URLs and {pubkeyHex, endpoint} objects)
@@ -302,22 +422,7 @@ async function cmdStart () {
       const pubkey = typeof seed === 'string' ? `seed_${i}` : seed.pubkeyHex
       const conn = peerManager.connectToPeer({ pubkeyHex: pubkey, endpoint })
       if (conn) {
-        conn.on('open', () => {
-          conn.send({
-            type: 'hello',
-            pubkey: config.pubkeyHex,
-            endpoint: config.endpoint
-          })
-        })
-        // Re-key when server sends hello response with real pubkey
-        conn.on('message', (msg) => {
-          if (msg.type === 'hello' && msg.pubkey && msg.pubkey !== pubkey) {
-            peerManager.peers.delete(pubkey)
-            conn.pubkeyHex = msg.pubkey
-            peerManager.peers.set(msg.pubkey, conn)
-            console.log(`  Peer identified: ${msg.pubkey.slice(0, 16)}... ${msg.endpoint || endpoint}`)
-          }
-        })
+        conn.on('open', () => performOutboundHandshake(conn))
       }
     }
   } else if (config.apiKey) {
@@ -345,13 +450,7 @@ async function cmdStart () {
       for (const peer of peers) {
         const conn = peerManager.connectToPeer(peer)
         if (conn) {
-          conn.on('open', () => {
-            conn.send({
-              type: 'hello',
-              pubkey: config.pubkeyHex,
-              endpoint: config.endpoint
-            })
-          })
+          conn.on('open', () => performOutboundHandshake(conn))
         }
       }
     } catch (err) {
@@ -371,7 +470,9 @@ async function cmdStart () {
     peerManager,
     headerRelay,
     txRelay,
-    config
+    config,
+    scorer,
+    peerHealth
   })
   await statusServer.start()
   console.log(`  Status: http://127.0.0.1:${statusPort}/status`)
@@ -401,9 +502,37 @@ async function cmdStart () {
     console.log(`UTXO spent: ${txid.slice(0, 16)}...:${vout} by ${spentByTxid.slice(0, 16)}...`)
   })
 
+  // Phase 2 events
+  scoreActions.on('peer:disconnected', ({ pubkeyHex, score }) => {
+    console.log(`Score disconnect: ${pubkeyHex.slice(0, 16)}... (score: ${score.toFixed(2)})`)
+  })
+
+  scoreActions.on('peer:blacklisted', ({ pubkeyHex, score }) => {
+    console.log(`Blacklisted: ${pubkeyHex.slice(0, 16)}... (score: ${score.toFixed(2)}, 24h)`)
+  })
+
+  dataValidator.on('validation:fail', ({ pubkeyHex, type, reason }) => {
+    console.log(`Bad data from ${pubkeyHex.slice(0, 16)}...: ${type} — ${reason}`)
+  })
+
+  anchorManager.on('anchor:disconnect', ({ pubkeyHex }) => {
+    console.log(`Anchor disconnected: ${pubkeyHex.slice(0, 16)}...`)
+  })
+
+  anchorManager.on('anchor:low_score', ({ pubkeyHex, score }) => {
+    console.log(`Anchor low score: ${pubkeyHex.slice(0, 16)}... (${score.toFixed(2)})`)
+  })
+
+  peerHealth.on('peer:recovered', ({ pubkeyHex }) => {
+    console.log(`Peer recovered: ${pubkeyHex.slice(0, 16)}...`)
+  })
+
   // ── 10. Graceful shutdown ─────────────────────────────────
   const shutdown = async () => {
     console.log('\nShutting down...')
+    clearInterval(pingTimer)
+    clearInterval(healthTimer)
+    anchorManager.stopMonitoring()
     bsvNode.disconnect()
     gossipManager.stop()
     await statusServer.stop()

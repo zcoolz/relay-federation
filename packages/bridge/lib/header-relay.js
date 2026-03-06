@@ -171,8 +171,13 @@ export class HeaderRelay extends EventEmitter {
       this.emit('header:sync', {
         pubkeyHex,
         added,
-        bestHeight: this.bestHeight
+        bestHeight: this.bestHeight,
+        headers: msg.headers
       })
+      // If we got a full batch, tell the source our new height so they send more
+      if (msg.headers.length >= this._maxBatch) {
+        this._announceToPeer(pubkeyHex)
+      }
       // Re-announce to all peers except the source
       this.peerManager.broadcast({
         type: 'header_announce',

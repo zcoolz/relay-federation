@@ -164,6 +164,14 @@ export class PeerManager extends EventEmitter {
             if (msg.type === 'hello' && msg.pubkey && msg.endpoint) {
               const conn = this.acceptPeer(ws, msg.pubkey, msg.endpoint)
               if (conn) {
+                // Send our identity back so the client knows who we are
+                if (opts.pubkeyHex && opts.endpoint) {
+                  ws.send(JSON.stringify({
+                    type: 'hello',
+                    pubkey: opts.pubkeyHex,
+                    endpoint: opts.endpoint
+                  }))
+                }
                 this.emit('peer:connect', { pubkeyHex: msg.pubkey, endpoint: msg.endpoint })
                 // Forward the hello as a regular message too
                 conn.emit('message', msg)
@@ -204,6 +212,7 @@ export class PeerManager extends EventEmitter {
     })
 
     conn.on('close', () => {
+      this.peers.delete(conn.pubkeyHex)
       this.emit('peer:disconnect', { pubkeyHex: conn.pubkeyHex, endpoint: conn.endpoint })
     })
 

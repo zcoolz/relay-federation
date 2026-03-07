@@ -90,13 +90,13 @@ function render(s) {
       '<div class="card">' +
         '<h2>BSV Node</h2>' +
         '<div class="row"><span class="label">Status</span><span class="value"><span class="dot ' + (s.bsvNode.connected ? 'green' : 'red') + '"></span>' + (s.bsvNode.connected ? 'Connected' : 'Disconnected') + '</span></div>' +
-        '<div class="row"><span class="label">Host</span><span class="value mono">' + (s.bsvNode.host || '-') + '</span></div>' +
+        '<div class="row"><span class="label">Peers</span><span class="value">' + (s.bsvNode.peers || 0) + ' connected</span></div>' +
         '<div class="row"><span class="label">Height</span><span class="value">' + (s.bsvNode.height || '-') + '</span></div>' +
       '</div>' +
-      '<div class="card">' +
+      (s.wallet ? '<div class="card">' +
         '<h2>Wallet</h2>' +
         '<div style="text-align:center;padding:8px 0"><span class="big">' + (s.wallet.balanceSats !== null ? s.wallet.balanceSats.toLocaleString() : '-') + '</span><span style="color:#484f58"> sats</span></div>' +
-      '</div>' +
+      '</div>' : '') +
       '<div class="card full">' +
         '<h2>Peers (' + s.peers.connected + '/' + s.peers.max + ')</h2>' +
         peers +
@@ -139,15 +139,28 @@ export class StatusServer {
     this._peerHealth = opts.peerHealth || null
     this._bsvNodeClient = opts.bsvNodeClient || null
     this._store = opts.store || null
+    this._performOutboundHandshake = opts.performOutboundHandshake || null
+    this._registeredPubkeys = opts.registeredPubkeys || null
     this._startedAt = Date.now()
     this._server = null
+
+    // Job system for async actions (register, deregister)
+    this._jobs = new Map()
+    this._jobCounter = 0
+
+    // Log ring buffer — max 500 entries
+    this._logs = []
+    this._logListeners = new Set()
+    this._maxLogs = 500
   }
 
   /**
    * Build the status object from current bridge state.
+   * @param {object} [opts]
+   * @param {boolean} [opts.authenticated=false] — Include operator-only fields
    * @returns {Promise<object>}
    */
-  async getStatus () {
+  async getStatus ({ authenticated = false } = {}) {
     const peers = []
     if (this._peerManager) {
       for (const [pubkeyHex, conn] of this._peerManager.peers) {
@@ -158,6 +171,16 @@ export class StatusServer {
         }
         if (this._scorer) {
           entry.score = Math.round(this._scorer.getScore(pubkeyHex) * 100) / 100
+          const metrics = this._scorer.getMetrics(pubkeyHex)
+          if (metrics) {
+            entry.scoreBreakdown = {
+              uptime: Math.round(metrics.uptime * 100) / 100,
+              responseTime: Math.round(metrics.responseTime * 100) / 100,
+              dataAccuracy: Math.round(metrics.dataAccuracy * 100) / 100,
+              stakeAge: Math.round(metrics.stakeAge * 100) / 100,
+              raw: metrics.raw
+            }
+          }
         }
         if (this._peerHealth) {
           entry.health = this._peerHealth.getStatus(pubkeyHex)
@@ -188,20 +211,105 @@ export class StatusServer {
         seen: this._txRelay ? this._txRelay.seen.size : 0
       },
       bsvNode: {
-        connected: this._bsvNodeClient ? this._bsvNodeClient._connected : false,
-        host: this._bsvNodeClient ? this._bsvNodeClient._host : null,
-        height: this._bsvNodeClient ? (this._bsvNodeClient._peerStartHeight || null) : null
-      },
-      wallet: {
-        balanceSats: null
+        connected: this._bsvNodeClient ? this._bsvNodeClient.connectedCount > 0 : false,
+        peers: this._bsvNodeClient ? this._bsvNodeClient.connectedCount : 0,
+        height: this._bsvNodeClient ? this._bsvNodeClient.bestHeight : null
       }
     }
 
-    if (this._store) {
-      try { status.wallet.balanceSats = await this._store.getBalance() } catch {}
+    // Operator-only fields
+    if (authenticated) {
+      status.operator = true
+      status.bridge.address = this._config.address || null
+      status.wallet = { balanceSats: null, utxoCount: 0 }
+      if (this._store) {
+        try { status.wallet.balanceSats = await this._store.getBalance() } catch {}
+        try { status.wallet.utxoCount = (await this._store.getUnspentUtxos()).length } catch {}
+      }
     }
 
     return status
+  }
+
+  /**
+   * Check if a request is authenticated via statusSecret.
+   * @param {import('node:http').IncomingMessage} req
+   * @returns {boolean}
+   */
+  _checkAuth (req) {
+    const secret = this._config.statusSecret
+    if (!secret) return false
+
+    // Check ?auth= query param
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`)
+    const authParam = url.searchParams.get('auth')
+    if (authParam === secret) return true
+
+    // Check Authorization: Bearer header
+    const authHeader = req.headers.authorization
+    if (authHeader && authHeader.startsWith('Bearer ') && authHeader.slice(7) === secret) return true
+
+    return false
+  }
+
+  /**
+   * Add a log entry to the ring buffer and notify SSE listeners.
+   * @param {string} message
+   */
+  addLog (message) {
+    const entry = { timestamp: Date.now(), message }
+    this._logs.push(entry)
+    if (this._logs.length > this._maxLogs) {
+      this._logs.shift()
+    }
+    // Notify SSE listeners
+    for (const listener of this._logListeners) {
+      listener(entry)
+    }
+  }
+
+  /**
+   * Create a job for tracking async actions.
+   * @returns {{ jobId: string, log: function }}
+   */
+  _createJob () {
+    const jobId = `job_${++this._jobCounter}_${Date.now()}`
+    const job = { status: 'running', events: [], done: false, listeners: new Set() }
+    this._jobs.set(jobId, job)
+
+    // Auto-cleanup after 5 minutes
+    setTimeout(() => this._jobs.delete(jobId), 5 * 60 * 1000)
+
+    const log = (type, message, data) => {
+      const event = { type, message, data, timestamp: Date.now() }
+      job.events.push(event)
+      if (type === 'done' || type === 'error') {
+        job.status = type === 'error' ? 'failed' : 'completed'
+        job.done = true
+      }
+      // Notify SSE listeners
+      for (const listener of job.listeners) {
+        listener(event)
+      }
+    }
+
+    return { jobId, log }
+  }
+
+  /**
+   * Read the full JSON body from a request.
+   * @param {import('node:http').IncomingMessage} req
+   * @returns {Promise<object>}
+   */
+  _readBody (req) {
+    return new Promise((resolve, reject) => {
+      let body = ''
+      req.on('data', chunk => { body += chunk })
+      req.on('end', () => {
+        try { resolve(body ? JSON.parse(body) : {}) } catch (e) { reject(e) }
+      })
+      req.on('error', reject)
+    })
   }
 
   /**
@@ -214,7 +322,7 @@ export class StatusServer {
         // CORS headers for federation dashboard
         res.setHeader('Access-Control-Allow-Origin', '*')
         res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
 
         if (req.method === 'OPTIONS') {
           res.writeHead(204)
@@ -222,48 +330,215 @@ export class StatusServer {
           return
         }
 
-        if (req.method === 'GET' && req.url === '/status') {
-          this.getStatus().then(status => {
-            res.writeHead(200, { 'Content-Type': 'application/json' })
-            res.end(JSON.stringify(status))
-          }).catch(() => {
-            res.writeHead(500)
-            res.end('Internal Server Error')
-          })
-        } else if (req.method === 'GET' && (req.url === '/' || req.url === '/dashboard')) {
-          res.writeHead(200, { 'Content-Type': 'text/html' })
-          res.end(DASHBOARD_HTML)
-        } else if (req.method === 'POST' && req.url === '/broadcast') {
-          let body = ''
-          req.on('data', chunk => { body += chunk })
-          req.on('end', () => {
-            try {
-              const { rawHex } = JSON.parse(body)
-              if (!rawHex || typeof rawHex !== 'string') {
-                res.writeHead(400, { 'Content-Type': 'application/json' })
-                res.end(JSON.stringify({ error: 'rawHex required' }))
-                return
-              }
-              const buf = Buffer.from(rawHex, 'hex')
-              const hash = createHash('sha256').update(createHash('sha256').update(buf).digest()).digest()
-              const txid = Buffer.from(hash).reverse().toString('hex')
-              const sent = this._txRelay ? this._txRelay.broadcastTx(txid, rawHex) : 0
-              res.writeHead(200, { 'Content-Type': 'application/json' })
-              res.end(JSON.stringify({ txid, peers: sent }))
-            } catch (e) {
-              res.writeHead(400, { 'Content-Type': 'application/json' })
-              res.end(JSON.stringify({ error: e.message }))
-            }
-          })
-        } else {
-          res.writeHead(404)
-          res.end('Not Found')
-        }
+        this._handleRequest(req, res).catch(() => {
+          res.writeHead(500)
+          res.end('Internal Server Error')
+        })
       })
 
       this._server.listen(this._port, '0.0.0.0', () => resolve())
       this._server.on('error', reject)
     })
+  }
+
+  /**
+   * Route incoming HTTP requests.
+   * @param {import('node:http').IncomingMessage} req
+   * @param {import('node:http').ServerResponse} res
+   */
+  async _handleRequest (req, res) {
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`)
+    const path = url.pathname
+    const authenticated = this._checkAuth(req)
+
+    // GET /status — public or operator status
+    if (req.method === 'GET' && path === '/status') {
+      const status = await this.getStatus({ authenticated })
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(status))
+      return
+    }
+
+    // GET / or /dashboard — built-in HTML dashboard
+    if (req.method === 'GET' && (path === '/' || path === '/dashboard')) {
+      res.writeHead(200, { 'Content-Type': 'text/html' })
+      res.end(DASHBOARD_HTML)
+      return
+    }
+
+    // POST /broadcast — relay a raw tx to peers
+    if (req.method === 'POST' && path === '/broadcast') {
+      const body = await this._readBody(req)
+      const { rawHex } = body
+      if (!rawHex || typeof rawHex !== 'string') {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'rawHex required' }))
+        return
+      }
+      const buf = Buffer.from(rawHex, 'hex')
+      const hash = createHash('sha256').update(createHash('sha256').update(buf).digest()).digest()
+      const txid = Buffer.from(hash).reverse().toString('hex')
+      const sent = this._txRelay ? this._txRelay.broadcastTx(txid, rawHex) : 0
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ txid, peers: sent }))
+      return
+    }
+
+    // POST /register — operator: start async registration
+    if (req.method === 'POST' && path === '/register') {
+      if (!authenticated) {
+        res.writeHead(401, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Unauthorized. Provide statusSecret via ?auth= or Authorization header.' }))
+        return
+      }
+      const { runRegister } = await import('./actions.js')
+      const { jobId, log } = this._createJob()
+      res.writeHead(202, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ jobId, stream: `/jobs/${jobId}` }))
+      // Run async — don't await
+      runRegister({ config: this._config, store: this._store, log }).catch(err => {
+        log('error', err.message)
+      })
+      return
+    }
+
+    // POST /deregister — operator: start async deregistration
+    if (req.method === 'POST' && path === '/deregister') {
+      if (!authenticated) {
+        res.writeHead(401, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Unauthorized. Provide statusSecret via ?auth= or Authorization header.' }))
+        return
+      }
+      const { runDeregister } = await import('./actions.js')
+      const body = await this._readBody(req)
+      const { jobId, log } = this._createJob()
+      res.writeHead(202, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ jobId, stream: `/jobs/${jobId}` }))
+      runDeregister({ config: this._config, store: this._store, reason: body.reason || 'shutdown', log }).catch(err => {
+        log('error', err.message)
+      })
+      return
+    }
+
+    // POST /fund — operator: store a funding tx (synchronous)
+    if (req.method === 'POST' && path === '/fund') {
+      if (!authenticated) {
+        res.writeHead(401, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Unauthorized. Provide statusSecret via ?auth= or Authorization header.' }))
+        return
+      }
+      const { runFund } = await import('./actions.js')
+      const body = await this._readBody(req)
+      if (!body.rawHex) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'rawHex required' }))
+        return
+      }
+      try {
+        const result = await runFund({ config: this._config, store: this._store, rawHex: body.rawHex, log: () => {} })
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify(result))
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: err.message }))
+      }
+      return
+    }
+
+    // POST /connect — operator: connect to a peer endpoint
+    if (req.method === 'POST' && path === '/connect') {
+      if (!authenticated) {
+        res.writeHead(401, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Unauthorized. Provide statusSecret via ?auth= or Authorization header.' }))
+        return
+      }
+      const body = await this._readBody(req)
+      if (!body.endpoint) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'endpoint required (e.g. ws://host:port)' }))
+        return
+      }
+      if (!this._peerManager || !this._performOutboundHandshake) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Bridge not running — peer manager unavailable' }))
+        return
+      }
+      try {
+        const conn = this._peerManager.connectToPeer({ endpoint: body.endpoint })
+        if (conn) {
+          conn.on('open', () => this._performOutboundHandshake(conn))
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ endpoint: body.endpoint, status: 'connecting' }))
+        } else {
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ endpoint: body.endpoint, status: 'already_connected_or_failed' }))
+        }
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: err.message }))
+      }
+      return
+    }
+
+    // GET /jobs/:id — SSE stream for job progress
+    if (req.method === 'GET' && path.startsWith('/jobs/')) {
+      const jobId = path.slice(6)
+      const job = this._jobs.get(jobId)
+      if (!job) {
+        res.writeHead(404, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Job not found' }))
+        return
+      }
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive'
+      })
+      // Replay past events
+      for (const event of job.events) {
+        res.write(`data: ${JSON.stringify(event)}\n\n`)
+      }
+      if (job.done) {
+        res.write(`data: ${JSON.stringify({ type: 'end', status: job.status })}\n\n`)
+        res.end()
+        return
+      }
+      // Stream new events
+      const listener = (event) => {
+        res.write(`data: ${JSON.stringify(event)}\n\n`)
+        if (event.type === 'done' || event.type === 'error') {
+          res.write(`data: ${JSON.stringify({ type: 'end', status: event.type === 'error' ? 'failed' : 'completed' })}\n\n`)
+          res.end()
+          job.listeners.delete(listener)
+        }
+      }
+      job.listeners.add(listener)
+      req.on('close', () => job.listeners.delete(listener))
+      return
+    }
+
+    // GET /logs — SSE stream of live bridge logs
+    if (req.method === 'GET' && path === '/logs') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive'
+      })
+      // Replay buffer
+      for (const entry of this._logs) {
+        res.write(`data: ${JSON.stringify(entry)}\n\n`)
+      }
+      // Stream new
+      const listener = (entry) => {
+        res.write(`data: ${JSON.stringify(entry)}\n\n`)
+      }
+      this._logListeners.add(listener)
+      req.on('close', () => this._logListeners.delete(listener))
+      return
+    }
+
+    res.writeHead(404)
+    res.end('Not Found')
   }
 
   /**

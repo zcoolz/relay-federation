@@ -1,0 +1,1086 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Federation Mesh Explorer</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #06080d;
+    color: #c9d1d9;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace;
+    overflow: hidden;
+    height: 100vh;
+  }
+
+  /* Header */
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 24px;
+    border-bottom: 1px solid rgba(88, 166, 255, 0.1);
+    background: linear-gradient(180deg, #0d1117 0%, #0a0e14 100%);
+    backdrop-filter: blur(10px);
+  }
+  .header h1 {
+    font-size: 18px;
+    background: linear-gradient(135deg, #58a6ff 0%, #bc8cff 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+  }
+  .header .mesh-stats {
+    display: flex;
+    gap: 24px;
+    font-size: 13px;
+    color: #8b949e;
+  }
+  .header .mesh-stats .val { color: #58a6ff; font-weight: 600; }
+  .header .status-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 6px;
+    animation: pulse 2s ease-in-out infinite;
+  }
+  .header .status-dot.green { background: #3fb950; box-shadow: 0 0 12px #3fb95088, 0 0 24px #3fb95033; }
+  .header .status-dot.yellow { background: #d29922; box-shadow: 0 0 12px #d2992288, 0 0 24px #d2992233; }
+  .header .status-dot.red { background: #f85149; box-shadow: 0 0 12px #f8514988, 0 0 24px #f8514933; }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+
+  /* Main layout */
+  .main {
+    display: flex;
+    height: calc(100vh - 57px);
+  }
+
+  /* Bubble map area */
+  .map-container {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+    background:
+      radial-gradient(ellipse at 30% 40%, rgba(31, 111, 235, 0.06) 0%, transparent 60%),
+      radial-gradient(ellipse at 70% 60%, rgba(188, 140, 255, 0.04) 0%, transparent 60%),
+      linear-gradient(rgba(88, 166, 255, 0.02) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(88, 166, 255, 0.02) 1px, transparent 1px);
+    background-size: 100% 100%, 100% 100%, 40px 40px, 40px 40px;
+  }
+  .map-container svg {
+    width: 100%;
+    height: 100%;
+  }
+
+  /* Connection line */
+  .connection-line {
+    stroke: url(#lineGradient);
+    stroke-width: 2;
+    stroke-dasharray: 8 4;
+    animation: dash 1s linear infinite;
+    filter: drop-shadow(0 0 6px #1f6feb66);
+  }
+  .connection-line.offline {
+    stroke: #f85149;
+    stroke-dasharray: 4 8;
+    animation: none;
+    opacity: 0.3;
+  }
+
+  @keyframes dash {
+    to { stroke-dashoffset: -12; }
+  }
+
+  /* Bridge bubble */
+  .bridge-bubble {
+    cursor: pointer;
+    transition: transform 0.3s ease;
+  }
+  .bridge-bubble:hover { transform: scale(1.05); }
+  .bubble-ring {
+    fill: none;
+    stroke-width: 3;
+    transition: stroke 0.5s ease;
+  }
+  .bubble-ring.green { stroke: #3fb950; filter: drop-shadow(0 0 16px #3fb95066) drop-shadow(0 0 32px #3fb95022); }
+  .bubble-ring.yellow { stroke: #d29922; filter: drop-shadow(0 0 16px #d2992266) drop-shadow(0 0 32px #d2992222); }
+  .bubble-ring.red { stroke: #f85149; filter: drop-shadow(0 0 16px #f8514966) drop-shadow(0 0 32px #f8514922); }
+  .bubble-bg {
+    fill: #0d1117;
+    stroke: #21262d;
+    stroke-width: 1;
+  }
+  .bubble-label {
+    fill: #c9d1d9;
+    font-size: 11px;
+    font-family: monospace;
+    text-anchor: middle;
+  }
+  .bubble-label.name {
+    fill: #58a6ff;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .bubble-label.dim { fill: #484f58; font-size: 10px; }
+  .bubble-label.height { fill: #3fb950; font-size: 14px; font-weight: bold; }
+
+  /* Side panel */
+  .side-panel {
+    width: 360px;
+    background: linear-gradient(180deg, #0d111799 0%, #06080dee 100%);
+    border-left: 1px solid rgba(88, 166, 255, 0.08);
+    overflow-y: auto;
+    padding: 16px;
+    backdrop-filter: blur(12px);
+  }
+  .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+  .panel-card {
+    background: linear-gradient(135deg, rgba(22, 27, 34, 0.8) 0%, rgba(13, 17, 23, 0.9) 100%);
+    border: 1px solid rgba(48, 54, 61, 0.6);
+    border-radius: 10px;
+    padding: 14px;
+    margin-bottom: 12px;
+    transition: border-color 0.3s ease, box-shadow 0.3s ease;
+  }
+  .panel-card:hover {
+    border-color: rgba(88, 166, 255, 0.15);
+    box-shadow: 0 0 20px rgba(88, 166, 255, 0.03);
+  }
+  .panel-card h3 {
+    color: #8b949e;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    margin-bottom: 10px;
+  }
+  .panel-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 3px 0;
+    font-size: 13px;
+  }
+  .panel-row .label { color: #8b949e; }
+  .panel-row .value { color: #c9d1d9; font-family: monospace; }
+  .panel-row .value.green { color: #3fb950; }
+  .panel-row .value.yellow { color: #d29922; }
+  .panel-row .value.red { color: #f85149; }
+
+  .peer-entry {
+    padding: 8px 0;
+    border-bottom: 1px solid #21262d;
+    font-size: 12px;
+  }
+  .peer-entry:last-child { border-bottom: none; }
+  .peer-entry .peer-name { color: #58a6ff; font-family: monospace; }
+  .peer-entry .peer-meta { color: #484f58; margin-top: 2px; }
+  .peer-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    margin-right: 4px;
+  }
+  .peer-dot.green { background: #3fb950; }
+  .peer-dot.red { background: #f85149; }
+
+  /* Score bars */
+  .score-bars { margin-top: 4px; }
+  .score-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    margin-top: 2px;
+  }
+  .score-row .score-label { color: #484f58; width: 28px; text-align: right; }
+  .score-bar-bg {
+    flex: 1;
+    height: 6px;
+    background: #21262d;
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .score-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .score-bar-fill.green { background: linear-gradient(90deg, #238636 0%, #3fb950 100%); box-shadow: 0 0 6px #3fb95044; }
+  .score-bar-fill.yellow { background: linear-gradient(90deg, #9e6a03 0%, #d29922 100%); box-shadow: 0 0 6px #d2992244; }
+  .score-bar-fill.red { background: linear-gradient(90deg, #da3633 0%, #f85149 100%); box-shadow: 0 0 6px #f8514944; }
+  .score-row .score-val { color: #8b949e; width: 32px; font-family: monospace; }
+
+  .updated {
+    color: #484f58;
+    font-size: 11px;
+    text-align: center;
+    padding: 8px 0;
+  }
+
+  .error-banner {
+    background: #f8514922;
+    border: 1px solid #f85149;
+    border-radius: 6px;
+    padding: 10px;
+    color: #f85149;
+    font-size: 13px;
+    text-align: center;
+    margin-bottom: 12px;
+  }
+
+  /* Buttons */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    border-radius: 6px;
+    border: 1px solid #30363d;
+    background: #21262d;
+    color: #c9d1d9;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  .btn:hover { background: #30363d; }
+  .btn.primary { background: linear-gradient(135deg, #1f6feb 0%, #388bfd 100%); border-color: #1f6feb; color: #fff; box-shadow: 0 2px 8px #1f6feb33; }
+  .btn.primary:hover { background: linear-gradient(135deg, #388bfd 0%, #58a6ff 100%); box-shadow: 0 2px 12px #1f6feb55; }
+  .btn.danger { background: linear-gradient(135deg, #da3633 0%, #f85149 100%); border-color: #da3633; color: #fff; box-shadow: 0 2px 8px #da363333; }
+  .btn.danger:hover { background: linear-gradient(135deg, #f85149 0%, #ff7b72 100%); box-shadow: 0 2px 12px #da363355; }
+  .btn.sm { padding: 4px 10px; font-size: 11px; }
+  .btn.operator-badge { background: linear-gradient(135deg, #1f6feb22 0%, #bc8cff11 100%); border-color: #1f6feb; color: #58a6ff; text-shadow: 0 0 8px #58a6ff44; }
+
+  /* Actions grid */
+  .actions-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  /* Modal */
+  .modal-overlay {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.7);
+    z-index: 100;
+    justify-content: center;
+    align-items: center;
+  }
+  .modal-overlay.active { display: flex; }
+  .modal {
+    background: linear-gradient(135deg, #161b22 0%, #0d1117 100%);
+    border: 1px solid rgba(88, 166, 255, 0.15);
+    border-radius: 16px;
+    padding: 24px;
+    width: 440px;
+    max-height: 80vh;
+    overflow-y: auto;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), 0 0 40px rgba(31, 111, 235, 0.08);
+    animation: modalIn 0.2s ease-out;
+  }
+  @keyframes modalIn {
+    from { transform: scale(0.95); opacity: 0; }
+    to { transform: scale(1); opacity: 1; }
+  }
+  .modal h2 {
+    color: #c9d1d9;
+    font-size: 16px;
+    margin-bottom: 16px;
+  }
+  .modal .form-group {
+    margin-bottom: 14px;
+  }
+  .modal label {
+    display: block;
+    color: #8b949e;
+    font-size: 12px;
+    margin-bottom: 4px;
+  }
+  .modal input, .modal textarea {
+    width: 100%;
+    padding: 8px 12px;
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    color: #c9d1d9;
+    font-family: monospace;
+    font-size: 13px;
+  }
+  .modal textarea { min-height: 80px; resize: vertical; }
+  .modal input:focus, .modal textarea:focus {
+    outline: none;
+    border-color: #1f6feb;
+  }
+  .modal .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 16px;
+  }
+  .modal .warning {
+    background: #d2992222;
+    border: 1px solid #d29922;
+    border-radius: 6px;
+    padding: 10px;
+    color: #d29922;
+    font-size: 12px;
+    margin-bottom: 12px;
+  }
+
+  /* Job progress log inside modal */
+  .job-log {
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 10px;
+    font-family: monospace;
+    font-size: 12px;
+    max-height: 200px;
+    overflow-y: auto;
+    margin-top: 12px;
+  }
+  .job-log .step { color: #8b949e; }
+  .job-log .done { color: #3fb950; }
+  .job-log .error { color: #f85149; }
+
+  /* Log viewer panel */
+  .log-viewer {
+    display: none;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 250px;
+    background: linear-gradient(180deg, #0d1117ee 0%, #06080dff 100%);
+    border-top: 1px solid rgba(88, 166, 255, 0.1);
+    z-index: 50;
+    flex-direction: column;
+    backdrop-filter: blur(12px);
+    animation: slideUp 0.2s ease-out;
+  }
+  @keyframes slideUp {
+    from { transform: translateY(100%); }
+    to { transform: translateY(0); }
+  }
+  .log-viewer.active { display: flex; }
+  .log-viewer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 16px;
+    border-bottom: 1px solid rgba(48, 54, 61, 0.5);
+    background: rgba(22, 27, 34, 0.6);
+  }
+  .log-viewer-header h3 {
+    color: #8b949e;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+  }
+  .log-viewer-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 16px;
+    font-family: monospace;
+    font-size: 12px;
+  }
+  .log-line {
+    padding: 2px 0;
+    color: #8b949e;
+  }
+  .log-line .log-ts { color: #484f58; margin-right: 8px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Federation Mesh Explorer</h1>
+  <div class="mesh-stats">
+    <span><span class="status-dot green" id="meshDot"></span>Mesh <span class="val" id="meshStatus">loading...</span></span>
+    <span>Bridges: <span class="val" id="bridgeCount">-</span></span>
+    <span>Best Height: <span class="val" id="bestHeight">-</span></span>
+    <span>Total Peers: <span class="val" id="totalPeers">-</span></span>
+  </div>
+</div>
+
+<div class="main">
+  <div class="map-container">
+    <svg id="meshMap"></svg>
+  </div>
+  <div class="side-panel" id="sidePanel">
+    <div class="panel-card">
+      <h3>Select a bridge</h3>
+      <div style="color:#484f58;font-size:13px">Click a bridge bubble to view details</div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal overlay -->
+<div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)closeModal()">
+  <div class="modal" id="modalContent"></div>
+</div>
+
+<!-- Log viewer -->
+<div class="log-viewer" id="logViewer">
+  <div class="log-viewer-header">
+    <h3>Live Bridge Logs</h3>
+    <button class="btn sm" onclick="closeLogViewer()">Close</button>
+  </div>
+  <div class="log-viewer-body" id="logViewerBody"></div>
+</div>
+
+<script>
+// ===== Configuration =====
+const BRIDGES = [
+  { name: 'bridge-alpha', url: 'http://144.202.48.217:9333' },
+  { name: 'bridge-beta', url: 'http://45.63.77.31:9333' }
+];
+const POLL_INTERVAL = 5000;
+
+// ===== State =====
+let bridgeData = new Map();
+let selectedBridge = null;
+let operatorTokens = {}; // { bridgeUrl: token }
+let logSSE = null;
+let jobSSE = null;
+
+// Load saved operator tokens from localStorage
+try {
+  const saved = localStorage.getItem('relay_operator_tokens');
+  if (saved) operatorTokens = JSON.parse(saved);
+} catch {}
+
+// ===== Utilities =====
+function fmtUptime(s) {
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600),
+        m = Math.floor((s % 3600) / 60);
+  if (d > 0) return d + 'd ' + h + 'h ' + m + 'm';
+  if (h > 0) return h + 'h ' + m + 'm';
+  return m + 'm';
+}
+
+function truncPubkey(pk) {
+  if (!pk) return '(none)';
+  return pk.slice(0, 8) + '...' + pk.slice(-6);
+}
+
+function scoreColor(v) {
+  if (v >= 0.7) return 'green';
+  if (v >= 0.4) return 'yellow';
+  return 'red';
+}
+
+function fmtSats(n) {
+  if (n === null || n === undefined) return '-';
+  return n.toLocaleString();
+}
+
+function isOperator(bridgeUrl) {
+  return !!operatorTokens[bridgeUrl];
+}
+
+function getAuthParam(bridgeUrl) {
+  const token = operatorTokens[bridgeUrl];
+  return token ? '?auth=' + encodeURIComponent(token) : '';
+}
+
+// ===== Fetch bridge status =====
+async function fetchBridge(bridge) {
+  try {
+    const authQ = getAuthParam(bridge.url);
+    const r = await fetch(bridge.url + '/status' + authQ, { signal: AbortSignal.timeout(5000) });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    data._name = bridge.name;
+    data._url = bridge.url;
+    data._error = null;
+    data._lastSeen = Date.now();
+    return data;
+  } catch (e) {
+    return {
+      _name: bridge.name,
+      _url: bridge.url,
+      _error: e.message,
+      bridge: { pubkeyHex: null, endpoint: null, meshId: null, uptimeSeconds: 0 },
+      peers: { connected: 0, max: 0, list: [] },
+      headers: { bestHeight: -1, bestHash: null, count: 0 },
+      txs: { mempool: 0, seen: 0 }
+    };
+  }
+}
+
+async function pollAll() {
+  const results = await Promise.all(BRIDGES.map(fetchBridge));
+  for (const r of results) {
+    bridgeData.set(r._name, r);
+  }
+  renderMap();
+  renderHeader();
+  if (selectedBridge) renderPanel(selectedBridge);
+}
+
+// ===== Render header stats =====
+function renderHeader() {
+  const all = [...bridgeData.values()];
+  const online = all.filter(b => !b._error);
+  const totalPeers = online.reduce((s, b) => s + b.peers.connected, 0);
+  const bestH = Math.max(...all.map(b => b.headers.bestHeight));
+
+  document.getElementById('bridgeCount').textContent = online.length + '/' + all.length;
+  document.getElementById('totalPeers').textContent = totalPeers;
+  document.getElementById('bestHeight').textContent = bestH > 0 ? bestH.toLocaleString() : '-';
+
+  const dot = document.getElementById('meshDot');
+  if (online.length === all.length) {
+    dot.className = 'status-dot green';
+    document.getElementById('meshStatus').textContent = 'healthy';
+  } else if (online.length > 0) {
+    dot.className = 'status-dot yellow';
+    document.getElementById('meshStatus').textContent = 'degraded';
+  } else {
+    dot.className = 'status-dot red';
+    document.getElementById('meshStatus').textContent = 'offline';
+  }
+}
+
+// ===== Render bubble map =====
+function renderMap() {
+  const svg = document.getElementById('meshMap');
+  const rect = svg.getBoundingClientRect();
+  const W = rect.width;
+  const H = rect.height;
+  const cx = W / 2;
+  const cy = H / 2;
+
+  const all = [...bridgeData.values()];
+  const n = all.length;
+
+  const radius = Math.min(W, H) * 0.28;
+  const bubbleR = 65;
+  const positions = [];
+
+  for (let i = 0; i < n; i++) {
+    const angle = -Math.PI / 2 + (2 * Math.PI * i) / n;
+    positions.push({
+      x: cx + radius * Math.cos(angle),
+      y: cy + radius * Math.sin(angle)
+    });
+  }
+
+  let svgContent = '<defs>';
+  svgContent += '<linearGradient id="lineGradient" x1="0%" y1="0%" x2="100%" y2="0%">';
+  svgContent += '<stop offset="0%" style="stop-color:#1f6feb;stop-opacity:0.8"/>';
+  svgContent += '<stop offset="50%" style="stop-color:#bc8cff;stop-opacity:0.6"/>';
+  svgContent += '<stop offset="100%" style="stop-color:#1f6feb;stop-opacity:0.8"/>';
+  svgContent += '</linearGradient>';
+  svgContent += '<filter id="glow"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>';
+  svgContent += '</defs>';
+
+  // Draw connections between peers
+  for (let i = 0; i < n; i++) {
+    const b = all[i];
+    if (!b.peers || !b.peers.list) continue;
+    for (const peer of b.peers.list) {
+      for (let j = 0; j < n; j++) {
+        if (j === i) continue;
+        const other = all[j];
+        if (other.bridge.pubkeyHex === peer.pubkeyHex) {
+          if (i < j) {
+            const connected = peer.connected;
+            const cls = connected ? 'connection-line' : 'connection-line offline';
+            svgContent += '<line x1="' + positions[i].x + '" y1="' + positions[i].y +
+              '" x2="' + positions[j].x + '" y2="' + positions[j].y +
+              '" class="' + cls + '"/>';
+
+            const mx = (positions[i].x + positions[j].x) / 2;
+            const my = (positions[i].y + positions[j].y) / 2;
+            const score = peer.score !== undefined ? peer.score.toFixed(2) : '?';
+            svgContent += '<rect x="' + (mx - 28) + '" y="' + (my - 10) + '" width="56" height="20" rx="4" fill="#161b22" stroke="#30363d" stroke-width="1"/>';
+            svgContent += '<text x="' + mx + '" y="' + (my + 4) + '" text-anchor="middle" fill="#8b949e" font-size="10" font-family="monospace">score ' + score + '</text>';
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  // Draw bridge bubbles
+  for (let i = 0; i < n; i++) {
+    const b = all[i];
+    const px = positions[i].x;
+    const py = positions[i].y;
+    const isError = !!b._error;
+    const color = isError ? 'red' : (b.peers.connected > 0 ? 'green' : 'yellow');
+    const sel = selectedBridge === b._name ? ' style="filter: brightness(1.3);"' : '';
+
+    svgContent += '<g class="bridge-bubble" onclick="selectBridge(\'' + b._name + '\')"' + sel + '>';
+    svgContent += '<circle cx="' + px + '" cy="' + py + '" r="' + (bubbleR + 4) + '" class="bubble-ring ' + color + '"/>';
+    svgContent += '<circle cx="' + px + '" cy="' + py + '" r="' + bubbleR + '" class="bubble-bg"/>';
+    svgContent += '<text x="' + px + '" y="' + (py - 30) + '" class="bubble-label name">' + b._name + '</text>';
+    svgContent += '<text x="' + px + '" y="' + (py - 14) + '" class="bubble-label dim">' + truncPubkey(b.bridge.pubkeyHex) + '</text>';
+
+    if (isError) {
+      svgContent += '<text x="' + px + '" y="' + (py + 8) + '" class="bubble-label" style="fill:#f85149;font-size:12px">OFFLINE</text>';
+    } else {
+      svgContent += '<text x="' + px + '" y="' + (py + 8) + '" class="bubble-label height">' + b.headers.bestHeight.toLocaleString() + '</text>';
+    }
+
+    svgContent += '<text x="' + px + '" y="' + (py + 24) + '" class="bubble-label dim">' +
+      b.peers.connected + '/' + b.peers.max + ' peers</text>';
+    svgContent += '<text x="' + px + '" y="' + (py + 38) + '" class="bubble-label dim">' + fmtUptime(b.bridge.uptimeSeconds) + ' uptime</text>';
+    svgContent += '</g>';
+  }
+
+  svg.innerHTML = svgContent;
+}
+
+// ===== Score bar HTML =====
+function renderScoreBars(breakdown) {
+  if (!breakdown) return '';
+  const labels = [
+    ['UPT', breakdown.uptime],
+    ['RTT', breakdown.responseTime],
+    ['ACC', breakdown.dataAccuracy],
+    ['STK', breakdown.stakeAge]
+  ];
+  let html = '<div class="score-bars">';
+  for (const [label, val] of labels) {
+    const pct = Math.round(val * 100);
+    const c = scoreColor(val);
+    html += '<div class="score-row">';
+    html += '<span class="score-label">' + label + '</span>';
+    html += '<div class="score-bar-bg"><div class="score-bar-fill ' + c + '" style="width:' + pct + '%"></div></div>';
+    html += '<span class="score-val">' + val.toFixed(2) + '</span>';
+    html += '</div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+// ===== Render side panel =====
+function selectBridge(name) {
+  selectedBridge = name;
+  renderPanel(name);
+  renderMap();
+}
+
+function renderPanel(name) {
+  const b = bridgeData.get(name);
+  if (!b) return;
+
+  const panel = document.getElementById('sidePanel');
+  const color = b._error ? 'red' : (b.peers.connected > 0 ? 'green' : 'yellow');
+  const statusText = b._error ? 'offline' : (b.peers.connected > 0 ? 'online' : 'no peers');
+  const op = b.operator === true;
+
+  let html = '';
+
+  // Panel header with operator login/badge
+  html += '<div class="panel-header">';
+  html += '<span style="font-size:13px;color:#8b949e">' + b._name + '</span>';
+  if (op) {
+    html += '<span class="btn sm operator-badge">Operator</span>';
+  } else if (isOperator(b._url)) {
+    // Token saved but response doesn't have operator flag — might be wrong token
+    html += '<button class="btn sm" onclick="showAuthModal(\'' + b._url + '\')">Re-auth</button>';
+  } else {
+    html += '<button class="btn sm" onclick="showAuthModal(\'' + b._url + '\')">Operator Login</button>';
+  }
+  html += '</div>';
+
+  if (b._error) {
+    html += '<div class="error-banner">Unreachable: ' + b._error + '</div>';
+  }
+
+  // Bridge info
+  html += '<div class="panel-card">';
+  html += '<h3>Bridge</h3>';
+  html += '<div class="panel-row"><span class="label">Status</span><span class="value ' + color + '">' + statusText + '</span></div>';
+  html += '<div class="panel-row"><span class="label">Pubkey</span><span class="value">' + truncPubkey(b.bridge.pubkeyHex) + '</span></div>';
+  html += '<div class="panel-row"><span class="label">Endpoint</span><span class="value">' + (b.bridge.endpoint || '-') + '</span></div>';
+  html += '<div class="panel-row"><span class="label">Mesh ID</span><span class="value">' + (b.bridge.meshId || '-') + '</span></div>';
+  html += '<div class="panel-row"><span class="label">Uptime</span><span class="value">' + fmtUptime(b.bridge.uptimeSeconds) + '</span></div>';
+  if (op && b.bridge.address) {
+    html += '<div class="panel-row"><span class="label">Address</span><span class="value">' + b.bridge.address + '</span></div>';
+  }
+  html += '</div>';
+
+  // BSV Node card
+  if (b.bsvNode) {
+    const nodeColor = b.bsvNode.connected ? 'green' : 'red';
+    const nodeStatus = b.bsvNode.connected ? 'Connected' : 'Disconnected';
+    html += '<div class="panel-card">';
+    html += '<h3>BSV Node</h3>';
+    html += '<div class="panel-row"><span class="label">Status</span><span class="value ' + nodeColor + '">' + nodeStatus + '</span></div>';
+    html += '<div class="panel-row"><span class="label">Peers</span><span class="value">' + (b.bsvNode.peers || 0) + ' connected</span></div>';
+    html += '<div class="panel-row"><span class="label">Height</span><span class="value">' + (b.bsvNode.height ? b.bsvNode.height.toLocaleString() : '-') + '</span></div>';
+    html += '</div>';
+  }
+
+  // Network
+  html += '<div class="panel-card">';
+  html += '<h3>Network</h3>';
+  html += '<div class="panel-row"><span class="label">Best Height</span><span class="value green">' + b.headers.bestHeight.toLocaleString() + '</span></div>';
+  html += '<div class="panel-row"><span class="label">Best Hash</span><span class="value">' + (b.headers.bestHash ? b.headers.bestHash.slice(0, 16) + '...' : '-') + '</span></div>';
+  html += '<div class="panel-row"><span class="label">Headers Stored</span><span class="value">' + b.headers.count.toLocaleString() + '</span></div>';
+  html += '<div class="panel-row"><span class="label">Mempool</span><span class="value">' + b.txs.mempool + ' txs</span></div>';
+  html += '<div class="panel-row"><span class="label">Seen</span><span class="value">' + b.txs.seen + ' txs</span></div>';
+  html += '</div>';
+
+  // Wallet card (operator only)
+  if (op && b.wallet) {
+    html += '<div class="panel-card">';
+    html += '<h3>Wallet</h3>';
+    html += '<div class="panel-row"><span class="label">Balance</span><span class="value green">' + fmtSats(b.wallet.balanceSats) + ' sats</span></div>';
+    html += '<div class="panel-row"><span class="label">UTXOs</span><span class="value">' + (b.wallet.utxoCount || 0) + '</span></div>';
+    html += '</div>';
+  }
+
+  // Actions card (operator only)
+  if (op) {
+    html += '<div class="panel-card">';
+    html += '<h3>Actions</h3>';
+    html += '<div class="actions-grid">';
+    html += '<button class="btn primary" onclick="showRegisterModal(\'' + b._url + '\')">Register</button>';
+    html += '<button class="btn danger" onclick="showDeregisterModal(\'' + b._url + '\')">Deregister</button>';
+    html += '<button class="btn" onclick="showFundModal(\'' + b._url + '\')">Fund</button>';
+    html += '<button class="btn" onclick="showConnectModal(\'' + b._url + '\')">Connect Peer</button>';
+    html += '</div>';
+    html += '<div style="margin-top:8px">';
+    html += '<button class="btn sm" onclick="openLogViewer(\'' + b._url + '\')" style="width:100%">View Live Logs</button>';
+    html += '</div>';
+    html += '</div>';
+  }
+
+  // Peers
+  html += '<div class="panel-card">';
+  html += '<h3>Peers (' + b.peers.connected + '/' + b.peers.max + ')</h3>';
+  if (b.peers.list.length === 0) {
+    html += '<div style="color:#484f58;font-size:13px;padding:4px 0">No peers connected</div>';
+  } else {
+    for (const p of b.peers.list) {
+      const dotC = p.connected ? 'green' : 'red';
+      const score = p.score !== undefined ? p.score.toFixed(2) : '?';
+      html += '<div class="peer-entry">';
+      html += '<div><span class="peer-dot ' + dotC + '"></span><span class="peer-name">' + truncPubkey(p.pubkeyHex) + '</span> <span style="color:#484f58">score: ' + score + '</span></div>';
+      html += '<div class="peer-meta">' + (p.endpoint || '') + (p.health ? ' | ' + p.health : '') + '</div>';
+      if (p.scoreBreakdown) {
+        html += renderScoreBars(p.scoreBreakdown);
+      }
+      html += '</div>';
+    }
+  }
+  html += '</div>';
+
+  // Operator logout
+  if (isOperator(b._url)) {
+    html += '<div style="text-align:center;margin-top:4px">';
+    html += '<button class="btn sm" onclick="logoutOperator(\'' + b._url + '\')" style="color:#f85149">Logout Operator</button>';
+    html += '</div>';
+  }
+
+  html += '<div class="updated">Last updated: ' + new Date().toLocaleTimeString() + '</div>';
+  panel.innerHTML = html;
+}
+
+// ===== Modal system =====
+function openModal(html) {
+  document.getElementById('modalContent').innerHTML = html;
+  document.getElementById('modalOverlay').classList.add('active');
+}
+
+function closeModal() {
+  document.getElementById('modalOverlay').classList.remove('active');
+  if (jobSSE) { jobSSE.close(); jobSSE = null; }
+}
+
+// Auth modal
+function showAuthModal(bridgeUrl) {
+  const existing = operatorTokens[bridgeUrl] || '';
+  openModal(
+    '<h2>Operator Login</h2>' +
+    '<div class="form-group">' +
+    '<label>statusSecret (from bridge config.json)</label>' +
+    '<input type="password" id="authInput" value="' + existing + '" placeholder="64-char hex token">' +
+    '</div>' +
+    '<div class="modal-actions">' +
+    '<button class="btn" onclick="closeModal()">Cancel</button>' +
+    '<button class="btn primary" onclick="saveAuth(\'' + bridgeUrl + '\')">Login</button>' +
+    '</div>'
+  );
+  setTimeout(() => document.getElementById('authInput').focus(), 100);
+}
+
+function saveAuth(bridgeUrl) {
+  const token = document.getElementById('authInput').value.trim();
+  if (!token) { delete operatorTokens[bridgeUrl]; }
+  else { operatorTokens[bridgeUrl] = token; }
+  localStorage.setItem('relay_operator_tokens', JSON.stringify(operatorTokens));
+  closeModal();
+  pollAll(); // re-fetch with auth
+}
+
+function logoutOperator(bridgeUrl) {
+  delete operatorTokens[bridgeUrl];
+  localStorage.setItem('relay_operator_tokens', JSON.stringify(operatorTokens));
+  pollAll();
+}
+
+// Register modal
+function showRegisterModal(bridgeUrl) {
+  openModal(
+    '<h2>Register Bridge</h2>' +
+    '<div class="warning">This will broadcast a stake bond + registration transaction to the BSV network. Ensure your bridge wallet is funded.</div>' +
+    '<div class="modal-actions">' +
+    '<button class="btn" onclick="closeModal()">Cancel</button>' +
+    '<button class="btn primary" id="regBtn" onclick="doRegister(\'' + bridgeUrl + '\')">Register</button>' +
+    '</div>' +
+    '<div id="jobLog" class="job-log" style="display:none"></div>'
+  );
+}
+
+async function doRegister(bridgeUrl) {
+  document.getElementById('regBtn').disabled = true;
+  document.getElementById('regBtn').textContent = 'Registering...';
+  document.getElementById('jobLog').style.display = 'block';
+
+  try {
+    const r = await fetch(bridgeUrl + '/register' + getAuthParam(bridgeUrl), { method: 'POST' });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({ error: 'HTTP ' + r.status }));
+      appendJobLog('error', err.error || 'Request failed');
+      return;
+    }
+    const { jobId, stream } = await r.json();
+    streamJob(bridgeUrl + stream);
+  } catch (e) {
+    appendJobLog('error', e.message);
+  }
+}
+
+// Deregister modal
+function showDeregisterModal(bridgeUrl) {
+  openModal(
+    '<h2>Deregister Bridge</h2>' +
+    '<div class="form-group">' +
+    '<label>Reason (optional)</label>' +
+    '<input type="text" id="deregReason" value="shutdown" placeholder="e.g. maintenance">' +
+    '</div>' +
+    '<div class="modal-actions">' +
+    '<button class="btn" onclick="closeModal()">Cancel</button>' +
+    '<button class="btn danger" id="deregBtn" onclick="doDeregister(\'' + bridgeUrl + '\')">Deregister</button>' +
+    '</div>' +
+    '<div id="jobLog" class="job-log" style="display:none"></div>'
+  );
+}
+
+async function doDeregister(bridgeUrl) {
+  const reason = document.getElementById('deregReason').value.trim() || 'shutdown';
+  document.getElementById('deregBtn').disabled = true;
+  document.getElementById('deregBtn').textContent = 'Deregistering...';
+  document.getElementById('jobLog').style.display = 'block';
+
+  try {
+    const r = await fetch(bridgeUrl + '/deregister' + getAuthParam(bridgeUrl), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason })
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({ error: 'HTTP ' + r.status }));
+      appendJobLog('error', err.error || 'Request failed');
+      return;
+    }
+    const { jobId, stream } = await r.json();
+    streamJob(bridgeUrl + stream);
+  } catch (e) {
+    appendJobLog('error', e.message);
+  }
+}
+
+// Fund modal
+function showFundModal(bridgeUrl) {
+  openModal(
+    '<h2>Fund Bridge</h2>' +
+    '<div class="form-group">' +
+    '<label>Raw Transaction Hex</label>' +
+    '<textarea id="fundHex" placeholder="Paste the raw hex of a transaction that pays to this bridge address"></textarea>' +
+    '</div>' +
+    '<div class="modal-actions">' +
+    '<button class="btn" onclick="closeModal()">Cancel</button>' +
+    '<button class="btn primary" id="fundBtn" onclick="doFund(\'' + bridgeUrl + '\')">Submit</button>' +
+    '</div>' +
+    '<div id="fundResult" style="margin-top:12px;font-size:13px;display:none"></div>'
+  );
+}
+
+async function doFund(bridgeUrl) {
+  const rawHex = document.getElementById('fundHex').value.trim();
+  if (!rawHex) return;
+  document.getElementById('fundBtn').disabled = true;
+  document.getElementById('fundBtn').textContent = 'Processing...';
+
+  try {
+    const r = await fetch(bridgeUrl + '/fund' + getAuthParam(bridgeUrl), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rawHex })
+    });
+    const data = await r.json();
+    const el = document.getElementById('fundResult');
+    el.style.display = 'block';
+    if (r.ok) {
+      el.innerHTML = '<span style="color:#3fb950">Stored ' + data.stored + ' UTXO(s). Balance: ' + fmtSats(data.balance) + ' sats</span>';
+      setTimeout(() => pollAll(), 1000);
+    } else {
+      el.innerHTML = '<span style="color:#f85149">' + (data.error || 'Failed') + '</span>';
+    }
+  } catch (e) {
+    document.getElementById('fundResult').style.display = 'block';
+    document.getElementById('fundResult').innerHTML = '<span style="color:#f85149">' + e.message + '</span>';
+  }
+}
+
+// Connect peer modal
+function showConnectModal(bridgeUrl) {
+  openModal(
+    '<h2>Connect to Peer</h2>' +
+    '<div class="form-group">' +
+    '<label>Peer WebSocket Endpoint</label>' +
+    '<input type="text" id="connectEndpoint" placeholder="ws://host:port">' +
+    '</div>' +
+    '<div class="modal-actions">' +
+    '<button class="btn" onclick="closeModal()">Cancel</button>' +
+    '<button class="btn primary" id="connectBtn" onclick="doConnect(\'' + bridgeUrl + '\')">Connect</button>' +
+    '</div>' +
+    '<div id="connectResult" style="margin-top:12px;font-size:13px;display:none"></div>'
+  );
+}
+
+async function doConnect(bridgeUrl) {
+  const endpoint = document.getElementById('connectEndpoint').value.trim();
+  if (!endpoint) return;
+  document.getElementById('connectBtn').disabled = true;
+  document.getElementById('connectBtn').textContent = 'Connecting...';
+
+  try {
+    const r = await fetch(bridgeUrl + '/connect' + getAuthParam(bridgeUrl), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpoint })
+    });
+    const data = await r.json();
+    const el = document.getElementById('connectResult');
+    el.style.display = 'block';
+    if (r.ok) {
+      el.innerHTML = '<span style="color:#3fb950">' + data.status + ': ' + data.endpoint + '</span>';
+      setTimeout(() => pollAll(), 2000);
+    } else {
+      el.innerHTML = '<span style="color:#f85149">' + (data.error || 'Failed') + '</span>';
+    }
+  } catch (e) {
+    document.getElementById('connectResult').style.display = 'block';
+    document.getElementById('connectResult').innerHTML = '<span style="color:#f85149">' + e.message + '</span>';
+  }
+}
+
+// ===== Job SSE streaming =====
+function streamJob(streamUrl) {
+  if (jobSSE) jobSSE.close();
+  jobSSE = new EventSource(streamUrl);
+  jobSSE.onmessage = (e) => {
+    try {
+      const event = JSON.parse(e.data);
+      if (event.type === 'end') {
+        jobSSE.close();
+        jobSSE = null;
+        if (event.status === 'completed') {
+          appendJobLog('done', 'Completed successfully');
+        }
+        setTimeout(() => pollAll(), 1000);
+        return;
+      }
+      appendJobLog(event.type || 'step', event.message);
+    } catch {}
+  };
+  jobSSE.onerror = () => {
+    appendJobLog('error', 'SSE connection lost');
+    jobSSE.close();
+    jobSSE = null;
+  };
+}
+
+function appendJobLog(type, message) {
+  const log = document.getElementById('jobLog');
+  if (!log) return;
+  log.style.display = 'block';
+  const line = document.createElement('div');
+  line.className = type;
+  line.textContent = message;
+  log.appendChild(line);
+  log.scrollTop = log.scrollHeight;
+}
+
+// ===== Log viewer =====
+function openLogViewer(bridgeUrl) {
+  const viewer = document.getElementById('logViewer');
+  const body = document.getElementById('logViewerBody');
+  body.innerHTML = '';
+  viewer.classList.add('active');
+
+  if (logSSE) logSSE.close();
+  logSSE = new EventSource(bridgeUrl + '/logs');
+  logSSE.onmessage = (e) => {
+    try {
+      const entry = JSON.parse(e.data);
+      const line = document.createElement('div');
+      line.className = 'log-line';
+      const ts = new Date(entry.timestamp).toLocaleTimeString();
+      line.innerHTML = '<span class="log-ts">' + ts + '</span>' + escapeHtml(entry.message);
+      body.appendChild(line);
+      // Keep max 200 visible
+      while (body.children.length > 200) body.removeChild(body.firstChild);
+      body.scrollTop = body.scrollHeight;
+    } catch {}
+  };
+  logSSE.onerror = () => {
+    const line = document.createElement('div');
+    line.className = 'log-line';
+    line.style.color = '#f85149';
+    line.textContent = 'SSE connection lost';
+    body.appendChild(line);
+  };
+}
+
+function closeLogViewer() {
+  document.getElementById('logViewer').classList.remove('active');
+  if (logSSE) { logSSE.close(); logSSE = null; }
+}
+
+function escapeHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// ===== Init =====
+pollAll();
+setInterval(pollAll, POLL_INTERVAL);
+window.addEventListener('resize', () => renderMap());
+</script>
+</body>
+</html>

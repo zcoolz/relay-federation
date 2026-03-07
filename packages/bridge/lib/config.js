@@ -1,6 +1,7 @@
 import { readFile, writeFile, mkdir, access } from 'node:fs/promises'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
+import { randomBytes } from 'node:crypto'
 import { PrivateKey } from '@bsv/sdk'
 
 const DEFAULT_DIR = join(homedir(), '.relay-bridge')
@@ -30,12 +31,13 @@ export async function initConfig (dir = DEFAULT_DIR) {
     pubkeyHex: privKey.toPublicKey().toString(),
     address,
     endpoint: 'wss://your-bridge.example.com:8333',
-    meshId: 'indelible',
+    meshId: '70016',
     capabilities: ['tx_relay', 'header_sync', 'broadcast', 'address_history'],
     spvEndpoint: 'https://relay.indelible.one',
     apiKey: '',
     port: 8333,
     statusPort: 9333,
+    statusSecret: randomBytes(32).toString('hex'),
     maxPeers: 20,
     dataDir: join(dir, 'data'),
     seedPeers: []

@@ -37,7 +37,7 @@ export class GossipManager extends EventEmitter {
     this._privKey = opts.privKey
     this._pubkeyHex = opts.pubkeyHex
     this._endpoint = opts.endpoint
-    this._meshId = opts.meshId || 'indelible'
+    this._meshId = opts.meshId || '70016'
     this._announceIntervalMs = opts.announceIntervalMs || 60000
     this._maxAge = opts.maxAge || 300000
     this._maxPeersResponse = opts.maxPeersResponse || 50

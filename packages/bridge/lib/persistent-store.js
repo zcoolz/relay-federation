@@ -1,5 +1,6 @@
 import { Level } from 'level'
 import { EventEmitter } from 'node:events'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 
 /**
@@ -33,6 +34,7 @@ export class PersistentStore extends EventEmitter {
     this._utxos = null
     this._meta = null
     this._watched = null
+    this._hashIndex = null
   }
 
   /** Open the database and create sublevels. */
@@ -44,6 +46,7 @@ export class PersistentStore extends EventEmitter {
     this._utxos = this.db.sublevel('utxos', { valueEncoding: 'json' })
     this._meta = this.db.sublevel('meta', { valueEncoding: 'json' })
     this._watched = this.db.sublevel('watched', { valueEncoding: 'json' })
+    this._hashIndex = this.db.sublevel('hashIndex', { valueEncoding: 'json' })
     this.emit('open')
   }
 
@@ -55,24 +58,35 @@ export class PersistentStore extends EventEmitter {
   // ── Headers ──────────────────────────────────────────────
 
   /**
-   * Store a header by height.
-   * @param {{ height: number, hash: string, prevHash: string }} header
+   * Store a header by height (with hash index).
+   * @param {{ height: number, hash: string, prevHash: string, merkleRoot?: string, timestamp?: number, bits?: number, nonce?: number, version?: number }} header
    */
   async putHeader (header) {
     await this._headers.put(String(header.height), header)
+    if (header.hash) {
+      await this._hashIndex.put(header.hash, header.height)
+    }
   }
 
   /**
-   * Store multiple headers in a batch.
-   * @param {Array<{ height: number, hash: string, prevHash: string }>} headers
+   * Store multiple headers in a batch (with hash index).
+   * @param {Array<{ height: number, hash: string, prevHash: string, merkleRoot?: string, timestamp?: number, bits?: number, nonce?: number, version?: number }>} headers
    */
   async putHeaders (headers) {
-    const ops = headers.map(h => ({
+    const headerOps = headers.map(h => ({
       type: 'put',
       key: String(h.height),
       value: h
     }))
-    await this._headers.batch(ops)
+    await this._headers.batch(headerOps)
+    const hashOps = headers.filter(h => h.hash).map(h => ({
+      type: 'put',
+      key: h.hash,
+      value: h.height
+    }))
+    if (hashOps.length > 0) {
+      await this._hashIndex.batch(hashOps)
+    }
   }
 
   /**
@@ -83,6 +97,61 @@ export class PersistentStore extends EventEmitter {
   async getHeader (height) {
     const val = await this._headers.get(String(height))
     return val !== undefined ? val : null
+  }
+
+  /**
+   * Get a header by block hash.
+   * @param {string} hash
+   * @returns {Promise<object|null>}
+   */
+  async getHeaderByHash (hash) {
+    const height = await this._hashIndex.get(hash)
+    if (height === undefined) return null
+    return this.getHeader(height)
+  }
+
+  /**
+   * Verify a merkle proof against a stored block header.
+   * @param {string} txHash — transaction hash (hex, display order)
+   * @param {string[]} merkleProof — sibling hashes in the merkle path
+   * @param {number} txIndex — transaction index in the block
+   * @param {string} blockHash — block hash to verify against
+   * @returns {Promise<{ verified: boolean, blockHeight: number, blockTimestamp: number }>}
+   */
+  async verifyMerkleProof (txHash, merkleProof, txIndex, blockHash) {
+    const header = await this.getHeaderByHash(blockHash)
+    if (!header) {
+      throw new Error(`Block ${blockHash} not found in header chain`)
+    }
+    if (!header.merkleRoot) {
+      throw new Error(`Header at height ${header.height} has no merkleRoot stored`)
+    }
+
+    // Compute merkle root from proof
+    let hash = Buffer.from(txHash, 'hex').reverse()
+    let index = txIndex
+
+    for (const proofHash of merkleProof) {
+      const sibling = Buffer.from(proofHash, 'hex').reverse()
+      const combined = (index % 2 === 0)
+        ? Buffer.concat([hash, sibling])
+        : Buffer.concat([sibling, hash])
+      hash = doubleSha256(combined)
+      index = Math.floor(index / 2)
+    }
+
+    const calculatedRoot = hash.reverse().toString('hex')
+
+    if (calculatedRoot !== header.merkleRoot) {
+      throw new Error('Merkle proof verification failed')
+    }
+
+    return {
+      verified: true,
+      blockHash: header.hash,
+      blockHeight: header.height,
+      blockTimestamp: header.timestamp
+    }
   }
 
   // ── Transactions ─────────────────────────────────────────
@@ -210,4 +279,11 @@ export class PersistentStore extends EventEmitter {
     const val = await this._meta.get(key)
     return val !== undefined ? val : defaultValue
   }
+}
+
+/** Double SHA-256 (Bitcoin standard) */
+function doubleSha256 (data) {
+  return createHash('sha256').update(
+    createHash('sha256').update(data).digest()
+  ).digest()
 }

@@ -27,7 +27,9 @@ describe('Bridge config', () => {
       config.pubkeyHex.startsWith('02') || config.pubkeyHex.startsWith('03'),
       'compressed pubkey starts with 02 or 03'
     )
-    assert.equal(config.meshId, 'indelible')
+    assert.equal(config.meshId, '70016')
+    assert.equal(typeof config.statusSecret, 'string')
+    assert.equal(config.statusSecret.length, 64, 'statusSecret is 32 bytes hex')
     assert.ok(Array.isArray(config.capabilities))
     assert.equal(config.port, 8333)
   })

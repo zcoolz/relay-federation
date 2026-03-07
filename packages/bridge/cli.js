@@ -81,127 +81,30 @@ async function cmdRegister () {
     process.exit(1)
   }
 
+  const { PersistentStore } = await import('./lib/persistent-store.js')
+  const { runRegister } = await import('./lib/actions.js')
+
+  const dataDir = config.dataDir || join(dir, 'data')
+  const store = new PersistentStore(dataDir)
+  await store.open()
+
   console.log('Registration details:\n')
-  console.log(`  Pubkey:       ${config.pubkeyHex}`)
-  console.log(`  Endpoint:     ${config.endpoint}`)
-  console.log(`  Mesh:         ${config.meshId}`)
-  console.log(`  Capabilities: ${config.capabilities.join(', ')}`)
-  console.log('')
 
   try {
-    const { buildRegistrationTx } = await import('../registry/lib/registration.js')
-    const { PersistentStore } = await import('./lib/persistent-store.js')
-    const { BSVNodeClient } = await import('./lib/bsv-node-client.js')
-
-    // Open local LevelDB store for UTXOs
-    const dataDir = config.dataDir || join(dir, 'data')
-    const store = new PersistentStore(dataDir)
-    await store.open()
-
-    // Get UTXOs from local store (populated by 'relay-bridge fund')
-    const localUtxos = await store.getUnspentUtxos()
-
-    if (!localUtxos.length) {
-      console.log('Error: No UTXOs found. Fund your bridge first: relay-bridge fund <rawTxHex>')
-      await store.close()
-      process.exit(1)
-    }
-
-    // Map local UTXO format to what buildRegistrationTx expects
-    const utxos = []
-    for (const u of localUtxos) {
-      const rawHex = await store.getTx(u.txid)
-      if (!rawHex) {
-        console.log(`Warning: No source tx for UTXO ${u.txid}:${u.vout}, skipping`)
-        continue
-      }
-      utxos.push({ tx_hash: u.txid, tx_pos: u.vout, value: u.satoshis, rawHex })
-    }
-
-    if (!utxos.length) {
-      console.log('Error: No usable UTXOs (missing source transactions).')
-      await store.close()
-      process.exit(1)
-    }
-
-    // Connect to BSV P2P node for broadcasting
-    console.log('Connecting to BSV network...')
-    const bsvNode = new BSVNodeClient()
-
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        bsvNode.disconnect()
-        reject(new Error('BSV node connection timeout (15s)'))
-      }, 15000)
-      bsvNode.on('handshake', () => { clearTimeout(timeout); resolve() })
-      bsvNode.on('error', (err) => { clearTimeout(timeout); reject(err) })
-      bsvNode.connect()
+    const result = await runRegister({
+      config,
+      store,
+      log: (type, msg) => console.log(type === 'done' ? msg : `  ${msg}`)
     })
-
-    // Step 1: Build and broadcast stake bond tx
-    const { buildStakeBondTx } = await import('../registry/lib/stake-bond.js')
-    const { MIN_STAKE_SATS } = await import('@relay-federation/common/protocol')
-
-    console.log(`Building stake bond (${MIN_STAKE_SATS} sats)...`)
-    const stakeBond = await buildStakeBondTx({ wif: config.wif, utxos })
-
-    bsvNode.broadcastTx(stakeBond.txHex)
-    console.log(`  Stake bond txid: ${stakeBond.txid}`)
-
-    // Brief wait for stake tx to propagate
-    await new Promise(r => setTimeout(r, 1000))
-
-    // Step 2: Build registration tx using real stake bond txid
-    const stakeTxid = new Uint8Array(Buffer.from(stakeBond.txid, 'hex'))
-
-    // Reload UTXOs — stake bond consumed some, but its change output is spendable
-    // Use the stake bond tx's change output (index 1) as funding for registration
-    const stakeChangeTx = stakeBond.txHex
-    const stakeParsed = (await import('@bsv/sdk')).Transaction.fromHex(stakeChangeTx)
-    const changeOutput = stakeParsed.outputs[1]
-    const regUtxos = []
-    if (changeOutput && changeOutput.satoshis > 0) {
-      regUtxos.push({
-        tx_hash: stakeBond.txid,
-        tx_pos: 1,
-        value: changeOutput.satoshis,
-        rawHex: stakeChangeTx
-      })
-    }
-
-    if (!regUtxos.length) {
-      console.log('Error: Stake bond consumed all funds. No UTXOs left for registration tx.')
-      bsvNode.disconnect()
-      await store.close()
-      process.exit(1)
-    }
-
-    const { txHex, txid } = await buildRegistrationTx({
-      wif: config.wif,
-      utxos: regUtxos,
-      endpoint: config.endpoint,
-      capabilities: config.capabilities,
-      versions: ['1.0'],
-      networkVersion: '1.0',
-      stakeTxid,
-      meshId: config.meshId
-    })
-
-    bsvNode.broadcastTx(txHex)
-    console.log('Registration broadcast successful!')
-    console.log(`  Registration txid: ${txid}`)
-
-    // Brief wait for tx to propagate, then disconnect
-    await new Promise(r => setTimeout(r, 1000))
-    bsvNode.disconnect()
-    await store.close()
-
     console.log('')
     console.log('Your bridge will appear in peer lists on next scan cycle.')
   } catch (err) {
     console.log(`Registration failed: ${err.message}`)
+    await store.close()
     process.exit(1)
   }
+
+  await store.close()
 }
 
 async function cmdStart () {
@@ -658,34 +561,48 @@ async function cmdStart () {
     scorer,
     peerHealth,
     bsvNodeClient: bsvNode,
-    store
+    store,
+    performOutboundHandshake,
+    registeredPubkeys
   })
   await statusServer.start()
   console.log(`  Status: http://127.0.0.1:${statusPort}/status`)
 
-  // ── 9. Log events ─────────────────────────────────────────
+  // ── 9. Log events (dual: console + status server ring buffer) ──
   peerManager.on('peer:connect', ({ pubkeyHex }) => {
-    console.log(`Peer connected: ${pubkeyHex.slice(0, 16)}...`)
+    const msg = `Peer connected: ${pubkeyHex.slice(0, 16)}...`
+    console.log(msg)
+    statusServer.addLog(msg)
   })
 
   peerManager.on('peer:disconnect', ({ pubkeyHex }) => {
-    console.log(`Peer disconnected: ${pubkeyHex.slice(0, 16)}...`)
+    const msg = `Peer disconnected: ${pubkeyHex.slice(0, 16)}...`
+    console.log(msg)
+    statusServer.addLog(msg)
   })
 
   headerRelay.on('header:sync', ({ pubkeyHex, added, bestHeight }) => {
-    console.log(`Synced ${added} headers from ${pubkeyHex.slice(0, 16)}... (height: ${bestHeight})`)
+    const msg = `Synced ${added} headers from ${pubkeyHex.slice(0, 16)}... (height: ${bestHeight})`
+    console.log(msg)
+    statusServer.addLog(msg)
   })
 
   txRelay.on('tx:new', ({ txid }) => {
-    console.log(`New tx: ${txid.slice(0, 16)}...`)
+    const msg = `New tx: ${txid.slice(0, 16)}...`
+    console.log(msg)
+    statusServer.addLog(msg)
   })
 
   watcher.on('utxo:received', ({ txid, vout, satoshis }) => {
-    console.log(`UTXO received: ${txid.slice(0, 16)}...:${vout} (${satoshis} sat)`)
+    const msg = `UTXO received: ${txid.slice(0, 16)}...:${vout} (${satoshis} sat)`
+    console.log(msg)
+    statusServer.addLog(msg)
   })
 
   watcher.on('utxo:spent', ({ txid, vout, spentByTxid }) => {
-    console.log(`UTXO spent: ${txid.slice(0, 16)}...:${vout} by ${spentByTxid.slice(0, 16)}...`)
+    const msg = `UTXO spent: ${txid.slice(0, 16)}...:${vout} by ${spentByTxid.slice(0, 16)}...`
+    console.log(msg)
+    statusServer.addLog(msg)
   })
 
   // Phase 2 events
@@ -825,37 +742,21 @@ async function cmdFund () {
 
   const config = await loadConfig(dir)
   const { PersistentStore } = await import('./lib/persistent-store.js')
-  const { pubkeyToHash160, checkTxForWatched } = await import('./lib/output-parser.js')
+  const { runFund } = await import('./lib/actions.js')
 
   const store = new PersistentStore(dir)
   await store.open()
 
   try {
-    const hash160 = pubkeyToHash160(config.pubkeyHex)
-    const result = checkTxForWatched(rawHex, new Set([hash160]))
-
-    if (result.matches.length === 0) {
-      console.log('No outputs found paying to this bridge address.')
-      console.log(`  Bridge hash160: ${hash160}`)
-      process.exit(1)
-    }
-
-    console.log(`Found ${result.matches.length} output(s) for this bridge:\n`)
-
-    for (const match of result.matches) {
-      await store.putUtxo({
-        txid: result.txid,
-        vout: match.vout,
-        satoshis: match.satoshis,
-        scriptHex: match.scriptHex,
-        address: config.pubkeyHex
-      })
-      console.log(`  UTXO stored: ${result.txid}:${match.vout} (${match.satoshis} sat)`)
-    }
-
-    await store.putTx(result.txid, rawHex)
-    const balance = await store.getBalance()
-    console.log(`\n  Total balance: ${balance} satoshis`)
+    await runFund({
+      config,
+      store,
+      rawHex,
+      log: (type, msg) => console.log(`  ${msg}`)
+    })
+  } catch (err) {
+    console.log(`Fund failed: ${err.message}`)
+    process.exit(1)
   } finally {
     await store.close()
   }
@@ -870,86 +771,33 @@ async function cmdDeregister () {
   }
 
   const config = await loadConfig(dir)
-
   const reason = process.argv[3] || 'shutdown'
 
+  const { PersistentStore } = await import('./lib/persistent-store.js')
+  const { runDeregister } = await import('./lib/actions.js')
+
+  const dataDir = config.dataDir || join(dir, 'data')
+  const store = new PersistentStore(dataDir)
+  await store.open()
+
   console.log('Deregistration details:\n')
-  console.log(`  Pubkey: ${config.pubkeyHex}`)
-  console.log(`  Reason: ${reason}`)
-  console.log('')
 
   try {
-    const { buildDeregistrationTx } = await import('../registry/lib/registration.js')
-    const { PersistentStore } = await import('./lib/persistent-store.js')
-    const { BSVNodeClient } = await import('./lib/bsv-node-client.js')
-
-    // Open local LevelDB store for UTXOs
-    const dataDir = config.dataDir || join(dir, 'data')
-    const store = new PersistentStore(dataDir)
-    await store.open()
-
-    // Get UTXOs from local store
-    const localUtxos = await store.getUnspentUtxos()
-
-    if (!localUtxos.length) {
-      console.log('Error: No UTXOs found. Fund your bridge first: relay-bridge fund <rawTxHex>')
-      await store.close()
-      process.exit(1)
-    }
-
-    // Map local UTXO format to what buildDeregistrationTx expects
-    const utxos = []
-    for (const u of localUtxos) {
-      const rawHex = await store.getTx(u.txid)
-      if (!rawHex) {
-        console.log(`Warning: No source tx for UTXO ${u.txid}:${u.vout}, skipping`)
-        continue
-      }
-      utxos.push({ tx_hash: u.txid, tx_pos: u.vout, value: u.satoshis, rawHex })
-    }
-
-    if (!utxos.length) {
-      console.log('Error: No usable UTXOs (missing source transactions).')
-      await store.close()
-      process.exit(1)
-    }
-
-    // Build deregistration tx
-    const { txHex, txid } = await buildDeregistrationTx({
-      wif: config.wif,
-      utxos,
-      reason
+    await runDeregister({
+      config,
+      store,
+      reason,
+      log: (type, msg) => console.log(type === 'done' ? msg : `  ${msg}`)
     })
-
-    // Broadcast via BSV P2P — connect to a node, send tx, disconnect
-    console.log('Connecting to BSV network...')
-    const bsvNode = new BSVNodeClient()
-
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        bsvNode.disconnect()
-        reject(new Error('BSV node connection timeout (15s)'))
-      }, 15000)
-      bsvNode.on('handshake', () => { clearTimeout(timeout); resolve() })
-      bsvNode.on('error', (err) => { clearTimeout(timeout); reject(err) })
-      bsvNode.connect()
-    })
-
-    bsvNode.broadcastTx(txHex)
-    console.log('Deregistration broadcast successful!')
-    console.log(`  txid: ${txid}`)
-
-    // Brief wait for tx to propagate, then disconnect
-    await new Promise(r => setTimeout(r, 1000))
-    bsvNode.disconnect()
-    await store.close()
-
     console.log('')
     console.log('Your bridge will be removed from peer lists on next scan cycle.')
   } catch (err) {
     console.log(`Deregistration failed: ${err.message}`)
+    await store.close()
     process.exit(1)
   }
+
+  await store.close()
 }
 
 function formatUptime (seconds) {

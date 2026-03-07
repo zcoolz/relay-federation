@@ -355,8 +355,11 @@ async function cmdStart () {
   // ── 4a. Registry — track registered pubkeys for handshake gating ──
   const registeredPubkeys = new Set()
   registeredPubkeys.add(config.pubkeyHex) // always trust self
+  const seedEndpoints = new Set()
   for (const seed of seedPeers) {
     if (seed.pubkeyHex) registeredPubkeys.add(seed.pubkeyHex)
+    const ep = typeof seed === 'string' ? seed : seed.endpoint
+    if (ep) seedEndpoints.add(ep)
   }
   console.log(`  Registry: ${registeredPubkeys.size} trusted pubkeys (self + seeds)`)
 
@@ -412,7 +415,7 @@ async function cmdStart () {
       if (msg.type === 'challenge_response') {
         conn.removeListener('message', onMessage)
         clearTimeout(timeout)
-        const result = handshake.handleChallengeResponse(msg, nonce, registeredPubkeys)
+        const result = handshake.handleChallengeResponse(msg, nonce, conn.isSeed ? null : registeredPubkeys)
         if (result.error) {
           console.log(`Handshake failed with ${conn.pubkeyHex.slice(0, 16)}...: ${result.error}`)
           conn.destroy()
@@ -441,6 +444,11 @@ async function cmdStart () {
         }
 
         peerManager.peers.set(result.peerPubkey, conn)
+        // Learn seed pubkeys so future inbound connections from them pass registry check
+        if (conn.isSeed && !registeredPubkeys.has(result.peerPubkey)) {
+          registeredPubkeys.add(result.peerPubkey)
+          console.log(`  Seed pubkey learned: ${result.peerPubkey.slice(0, 16)}...`)
+        }
         console.log(`  Peer identified: ${result.peerPubkey.slice(0, 16)}... (v${result.selectedVersion})`)
 
         // Send verify to complete handshake
@@ -468,7 +476,7 @@ async function cmdStart () {
   }
 
   // ── 5. Start server ───────────────────────────────────────
-  await peerManager.startServer({ port: config.port, host: '0.0.0.0', pubkeyHex: config.pubkeyHex, endpoint: config.endpoint, handshake, registeredPubkeys })
+  await peerManager.startServer({ port: config.port, host: '0.0.0.0', pubkeyHex: config.pubkeyHex, endpoint: config.endpoint, handshake, registeredPubkeys, seedEndpoints })
   console.log(`Bridge listening on port ${config.port}`)
   console.log(`  Pubkey: ${config.pubkeyHex}`)
   console.log(`  Mesh:   ${config.meshId}`)
@@ -597,6 +605,7 @@ async function cmdStart () {
       const pubkey = typeof seed === 'string' ? `seed_${i}` : seed.pubkeyHex
       const conn = peerManager.connectToPeer({ pubkeyHex: pubkey, endpoint })
       if (conn) {
+        conn.isSeed = true
         conn.on('open', () => performOutboundHandshake(conn))
       }
     }

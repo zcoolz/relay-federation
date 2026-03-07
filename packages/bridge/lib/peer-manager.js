@@ -168,7 +168,8 @@ export class PeerManager extends EventEmitter {
 
             // If cryptographic handshake is available, use it
             if (opts.handshake && msg.nonce && Array.isArray(msg.versions)) {
-              const result = opts.handshake.handleHello(msg, opts.registeredPubkeys || null)
+              const isSeed = opts.seedEndpoints && opts.seedEndpoints.has(msg.endpoint)
+              const result = opts.handshake.handleHello(msg, isSeed ? null : (opts.registeredPubkeys || null))
               if (result.error) {
                 ws.send(JSON.stringify({ type: 'error', error: result.error }))
                 ws.close()
@@ -206,6 +207,10 @@ export class PeerManager extends EventEmitter {
                   }
 
                   // Handshake complete — accept peer
+                  // Learn seed pubkeys so they pass registry check on future connections
+                  if (isSeed && opts.registeredPubkeys && !opts.registeredPubkeys.has(result.peerPubkey)) {
+                    opts.registeredPubkeys.add(result.peerPubkey)
+                  }
                   const conn = this.acceptPeer(ws, result.peerPubkey, msg.endpoint)
                   if (conn) {
                     this.emit('peer:connect', { pubkeyHex: result.peerPubkey, endpoint: msg.endpoint })

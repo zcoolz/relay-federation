@@ -56,7 +56,7 @@ describe('StatusServer', () => {
     const status = await server.getStatus()
 
     assert.equal(status.bridge.pubkeyHex, TEST_CONFIG.pubkeyHex)
-    assert.equal(status.bridge.endpoint, TEST_CONFIG.endpoint)
+    assert.equal(status.bridge.endpoint, undefined) // endpoint is operator-only
     assert.equal(status.bridge.meshId, TEST_CONFIG.meshId)
     assert.equal(typeof status.bridge.uptimeSeconds, 'number')
     assert.ok(status.bridge.uptimeSeconds >= 0)
@@ -121,7 +121,7 @@ describe('StatusServer', () => {
     const status = await server.getStatus()
 
     assert.equal(status.bridge.pubkeyHex, null)
-    assert.equal(status.bridge.endpoint, null)
+    assert.equal(status.bridge.endpoint, undefined) // endpoint is operator-only
     assert.equal(status.peers.connected, 0)
     assert.equal(status.peers.max, 0)
     assert.equal(status.peers.list.length, 0)

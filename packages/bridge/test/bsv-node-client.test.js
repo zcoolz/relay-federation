@@ -42,7 +42,8 @@ function buildMessage (command, payload) {
 
 // Build a minimal version message
 function buildVersionPayload (startHeight = 939000) {
-  const payload = Buffer.alloc(86)
+  const userAgent = Buffer.from('/Bitcoin SV:1.2.0/', 'ascii')
+  const payload = Buffer.alloc(86 + userAgent.length)
   let offset = 0
   payload.writeInt32LE(70016, offset); offset += 4 // version
   payload.writeBigUInt64LE(1n, offset); offset += 8 // services
@@ -53,8 +54,9 @@ function buildVersionPayload (startHeight = 939000) {
   offset += 26
   // nonce (8 bytes)
   offset += 8
-  // user agent length (0)
-  payload[offset] = 0; offset += 1
+  // user agent
+  payload[offset] = userAgent.length; offset += 1
+  userAgent.copy(payload, offset); offset += userAgent.length
   // start height
   payload.writeInt32LE(startHeight, offset); offset += 4
   // relay

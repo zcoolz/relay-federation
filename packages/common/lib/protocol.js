@@ -26,8 +26,8 @@ export const VALID_CAPABILITIES = ['tx_relay', 'header_sync', 'broadcast', 'addr
 /** Supported protocol versions for handshake negotiation */
 export const SUPPORTED_VERSIONS = ['1.0']
 
-/** Minimum stake bond amount in satoshis (1 BSV ≈ $15 at current prices) */
-export const MIN_STAKE_SATS = 100_000_000
+/** Minimum stake bond in satoshis — proof of BSV ownership. Operators can stake more for higher trust. */
+export const MIN_STAKE_SATS = 1_000_000
 
 /** Handshake timeout — drop connection if not completed within this window */
 export const HANDSHAKE_TIMEOUT_MS = 10000

@@ -201,7 +201,7 @@ export class BSVPeer extends EventEmitter {
       }
 
       const onTimeout = () => {
-        this._socket.removeListener('error', onError)
+        if (this._socket) this._socket.removeListener('error', onError)
         this.removeListener('handshake', onHandshake)
         this.disconnect()
         reject(new Error('Handshake timeout (10s)'))
@@ -441,6 +441,12 @@ export class BSVPeer extends EventEmitter {
     const heightOffset = 80 + userAgentLen.size + userAgentLen.value
     if (heightOffset + 4 <= payload.length) {
       this._peerStartHeight = payload.readInt32LE(heightOffset)
+    }
+
+    // Only connect to BSV nodes — reject BTC/BCH
+    if (!this._peerUserAgent.includes('Bitcoin SV')) {
+      this.disconnect()
+      return
     }
 
     this._sendMessage('verack', Buffer.alloc(0))

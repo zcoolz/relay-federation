@@ -38,7 +38,11 @@ export function parseTx (rawHex) {
       satoshis,
       scriptHex,
       hash160: parsed.hash160,
-      isP2PKH: parsed.isP2PKH
+      isP2PKH: parsed.isP2PKH,
+      type: parsed.type,
+      data: parsed.data,
+      protocol: parsed.protocol,
+      parsed: parsed.parsed
     }
   })
 
@@ -55,16 +59,60 @@ export function parseTx (rawHex) {
  * @returns {{ isP2PKH: boolean, hash160: string|null }}
  */
 export function parseOutputScript (scriptHex) {
-  // P2PKH: 76 a9 14 <20 bytes hash160> 88 ac
+  const base = { isP2PKH: false, hash160: null, type: 'unknown', data: null, protocol: null, parsed: null }
+
+  // 1. P2PKH: 76 a9 14 <20 bytes hash160> 88 ac (fast path — most common)
   if (scriptHex.length === 50 &&
       scriptHex.startsWith('76a914') &&
       scriptHex.endsWith('88ac')) {
-    return {
-      isP2PKH: true,
-      hash160: scriptHex.slice(6, 46)
+    return { ...base, type: 'p2pkh', isP2PKH: true, hash160: scriptHex.slice(6, 46) }
+  }
+
+  // 2. OP_RETURN / OP_FALSE OP_RETURN
+  if (scriptHex.startsWith('6a') || scriptHex.startsWith('006a')) {
+    const opReturn = parseOpReturn(scriptHex)
+    if (opReturn) {
+      const { protocol, parsed } = detectProtocol(opReturn.pushes)
+      return { ...base, type: 'op_return', data: opReturn.pushes, protocol, parsed }
     }
   }
-  return { isP2PKH: false, hash160: null }
+
+  // 3. Ordinal inscription (OP_FALSE OP_IF OP_PUSH3 "ord" ...)
+  if (scriptHex.includes(ORD_ENVELOPE)) {
+    const ord = parseOrdinal(scriptHex)
+    if (ord) {
+      // Extract hash160 from P2PKH wrapper if present
+      let hash160 = null
+      if (scriptHex.startsWith('76a914') && scriptHex.length > 50) {
+        hash160 = scriptHex.slice(6, 46)
+      }
+      return {
+        ...base,
+        type: 'ordinal',
+        isP2PKH: !!hash160,
+        hash160,
+        protocol: ord.isBsv20 ? 'bsv-20' : 'ordinal',
+        parsed: ord
+      }
+    }
+  }
+
+  // 4. P2SH: a9 14 <20 bytes> 87
+  const p2sh = parseP2SH(scriptHex)
+  if (p2sh) {
+    return { ...base, type: 'p2sh', parsed: p2sh }
+  }
+
+  // 5. Bare multisig: OP_m <pubkeys> OP_n OP_CHECKMULTISIG
+  if (scriptHex.endsWith('ae')) {
+    const multi = parseMultisig(scriptHex)
+    if (multi) {
+      return { ...base, type: 'multisig', parsed: multi }
+    }
+  }
+
+  // 6. Unknown script type
+  return base
 }
 
 /**
@@ -118,4 +166,327 @@ export function checkTxForWatched (rawHex, watchedHash160s) {
     matches,
     spends: parsed.inputs
   }
+}
+
+// --- Protocol constants ---
+
+const B_PREFIX = '19HxigV4QyBv3tHpQVcUEQyq1pzZVdoAut'
+const BCAT_PREFIX = '15DHFxWZJT58f9nhyGnsRBqrgwK4W6h4Up'
+const BCAT_PART_PREFIX = '1ChDHzdd1H4wSjgGMHyndZm6qxEDGjqpJL'
+const MAP_PREFIX = '1PuQa7K62MiKCtssSLKy1kh56WWU7MtUR5'
+const METANET_MAGIC = '6d657461' // "meta" as hex
+
+// Ordinal envelope: OP_FALSE OP_IF OP_PUSH3 "ord"
+const ORD_ENVELOPE = '0063036f7264'
+
+// --- Script reading utilities ---
+
+/**
+ * Read a pushdata segment from a script hex string at the given offset.
+ * Handles direct-length (1-75), OP_PUSHDATA1 (0x4c), OP_PUSHDATA2 (0x4d).
+ *
+ * @param {string} hex — script as hex string
+ * @param {number} offset — byte offset (in hex chars, so multiply by 2)
+ * @returns {{ data: string, newOffset: number }} data as hex string
+ */
+function readPushData (hex, offset) {
+  const opByte = parseInt(hex.slice(offset, offset + 2), 16)
+  offset += 2
+
+  let dataLen
+  if (opByte >= 1 && opByte <= 75) {
+    dataLen = opByte
+  } else if (opByte === 0x4c) { // OP_PUSHDATA1
+    dataLen = parseInt(hex.slice(offset, offset + 2), 16)
+    offset += 2
+  } else if (opByte === 0x4d) { // OP_PUSHDATA2
+    dataLen = parseInt(hex.slice(offset, offset + 2), 16) +
+              parseInt(hex.slice(offset + 2, offset + 4), 16) * 256
+    offset += 4
+  } else if (opByte === 0x4e) { // OP_PUSHDATA4
+    dataLen = parseInt(hex.slice(offset, offset + 2), 16) +
+              parseInt(hex.slice(offset + 2, offset + 4), 16) * 256 +
+              parseInt(hex.slice(offset + 4, offset + 6), 16) * 65536 +
+              parseInt(hex.slice(offset + 6, offset + 8), 16) * 16777216
+    offset += 8
+  } else {
+    return { data: null, opByte, newOffset: offset }
+  }
+
+  const dataHex = hex.slice(offset, offset + dataLen * 2)
+  return { data: dataHex, newOffset: offset + dataLen * 2 }
+}
+
+/**
+ * Extract all push data segments from an OP_RETURN script.
+ * Skips the OP_RETURN (and optional OP_FALSE) prefix.
+ *
+ * @param {string} scriptHex
+ * @returns {{ pushes: string[], isFalseReturn: boolean }}
+ */
+export function parseOpReturn (scriptHex) {
+  let offset = 0
+  let isFalseReturn = false
+
+  if (scriptHex.startsWith('006a')) {
+    offset = 4 // skip OP_FALSE OP_RETURN
+    isFalseReturn = true
+  } else if (scriptHex.startsWith('6a')) {
+    offset = 2 // skip OP_RETURN
+  } else {
+    return null
+  }
+
+  const pushes = []
+  while (offset < scriptHex.length) {
+    const byte = parseInt(scriptHex.slice(offset, offset + 2), 16)
+
+    // OP_0 pushes empty data
+    if (byte === 0x00) {
+      pushes.push('')
+      offset += 2
+      continue
+    }
+    // OP_1 through OP_16 push their number
+    if (byte >= 0x51 && byte <= 0x60) {
+      pushes.push((byte - 0x50).toString(16).padStart(2, '0'))
+      offset += 2
+      continue
+    }
+
+    const result = readPushData(scriptHex, offset)
+    if (result.data === null) break // unknown opcode, stop
+    pushes.push(result.data)
+    offset = result.newOffset
+  }
+
+  return { pushes, isFalseReturn }
+}
+
+/**
+ * Detect which protocol an OP_RETURN output uses based on its first push.
+ *
+ * @param {string[]} pushes — array of hex push data
+ * @returns {{ protocol: string|null, parsed: object|null }}
+ */
+function detectProtocol (pushes) {
+  if (!pushes || pushes.length === 0) return { protocol: null, parsed: null }
+
+  const firstPush = hexToUtf8(pushes[0])
+
+  if (firstPush === B_PREFIX) {
+    return { protocol: 'b', parsed: parseBProtocol(pushes) }
+  }
+  if (firstPush === BCAT_PREFIX) {
+    return { protocol: 'bcat', parsed: parseBCATLinker(pushes) }
+  }
+  if (firstPush === BCAT_PART_PREFIX) {
+    return { protocol: 'bcat-part', parsed: parseBCATPart(pushes) }
+  }
+  if (firstPush === MAP_PREFIX) {
+    return { protocol: 'map', parsed: parseMAP(pushes) }
+  }
+  if (pushes[0] === METANET_MAGIC) {
+    return { protocol: 'metanet', parsed: parseMetaNet(pushes) }
+  }
+
+  return { protocol: null, parsed: null }
+}
+
+// --- Protocol parsers ---
+
+/**
+ * Parse B:// protocol fields.
+ * Format: <B_PREFIX> <data> <mimeType> [encoding] [filename]
+ */
+function parseBProtocol (pushes) {
+  return {
+    data: pushes[1] || null,
+    mimeType: pushes[2] ? hexToUtf8(pushes[2]) : null,
+    encoding: pushes[3] ? hexToUtf8(pushes[3]) : null,
+    filename: pushes[4] ? hexToUtf8(pushes[4]) : null
+  }
+}
+
+/**
+ * Parse BCAT linker fields.
+ * Format: <BCAT_PREFIX> <info> <mimeType> <charset> <filename> <flag> <txid1> <txid2> ...
+ */
+function parseBCATLinker (pushes) {
+  const chunkTxids = []
+  for (let i = 6; i < pushes.length; i++) {
+    if (pushes[i] && pushes[i].length === 64) {
+      chunkTxids.push(pushes[i])
+    }
+  }
+  return {
+    info: pushes[1] ? hexToUtf8(pushes[1]) : null,
+    mimeType: pushes[2] ? hexToUtf8(pushes[2]) : null,
+    charset: pushes[3] ? hexToUtf8(pushes[3]) : null,
+    filename: pushes[4] ? hexToUtf8(pushes[4]) : null,
+    flag: pushes[5] ? hexToUtf8(pushes[5]) : null,
+    chunkTxids
+  }
+}
+
+/**
+ * Parse BCAT part (chunk) fields.
+ * Format: <BCAT_PART_PREFIX> <raw data>
+ */
+function parseBCATPart (pushes) {
+  return {
+    data: pushes[1] || null
+  }
+}
+
+/**
+ * Parse MAP protocol fields.
+ * Format: <MAP_PREFIX> SET <key> <value> <key> <value> ...
+ */
+function parseMAP (pushes) {
+  const action = pushes[1] ? hexToUtf8(pushes[1]) : null
+  const pairs = {}
+  for (let i = 2; i < pushes.length - 1; i += 2) {
+    const key = hexToUtf8(pushes[i])
+    const value = hexToUtf8(pushes[i + 1] || '')
+    if (key) pairs[key] = value
+  }
+  return { action, pairs }
+}
+
+/**
+ * Parse MetaNet protocol fields.
+ * Format: <"meta" 4 bytes> <nodeAddress> <parentTxid>
+ */
+function parseMetaNet (pushes) {
+  return {
+    nodeAddress: pushes[1] ? hexToUtf8(pushes[1]) : null,
+    parentTxid: pushes[2] || null
+  }
+}
+
+/**
+ * Parse a 1Sat Ordinal inscription from a script hex.
+ * Scans for the envelope: OP_FALSE OP_IF OP_PUSH3 "ord" ... OP_ENDIF
+ *
+ * @param {string} scriptHex
+ * @returns {{ contentType: string|null, content: string|null, isBsv20: boolean, bsv20: object|null }|null}
+ */
+export function parseOrdinal (scriptHex) {
+  const envIdx = scriptHex.indexOf(ORD_ENVELOPE)
+  if (envIdx === -1) return null
+
+  // Start after the "ord" push: skip OP_FALSE(00) OP_IF(63) OP_PUSH3(03) "ord"(6f7264)
+  let offset = envIdx + ORD_ENVELOPE.length
+  let contentType = null
+  let content = null
+
+  while (offset < scriptHex.length) {
+    const byte = parseInt(scriptHex.slice(offset, offset + 2), 16)
+    offset += 2
+
+    if (byte === 0x68) break // OP_ENDIF
+
+    // Field tag
+    if (byte === 0x51) {
+      // OP_1 = content type field, next push is the mime type
+      const result = readPushData(scriptHex, offset)
+      if (result.data !== null) {
+        contentType = hexToUtf8(result.data)
+        offset = result.newOffset
+      }
+    } else if (byte === 0x00) {
+      // OP_0 = content body field, next push is the data
+      const result = readPushData(scriptHex, offset)
+      if (result.data !== null) {
+        content = result.data
+        offset = result.newOffset
+      }
+    } else if (byte >= 0x01 && byte <= 0x4b) {
+      // Direct push — skip this data (unknown field)
+      offset += byte * 2
+    } else if (byte === 0x4c) {
+      const len = parseInt(scriptHex.slice(offset, offset + 2), 16)
+      offset += 2 + len * 2
+    } else if (byte === 0x4d) {
+      const len = parseInt(scriptHex.slice(offset, offset + 2), 16) +
+                  parseInt(scriptHex.slice(offset + 2, offset + 4), 16) * 256
+      offset += 4 + len * 2
+    }
+  }
+
+  let isBsv20 = false
+  let bsv20 = null
+  if (contentType === 'application/bsv-20' && content) {
+    isBsv20 = true
+    try {
+      bsv20 = JSON.parse(hexToUtf8(content))
+    } catch { /* invalid JSON */ }
+  }
+
+  return { contentType, content, isBsv20, bsv20 }
+}
+
+/**
+ * Detect P2SH script: OP_HASH160 <20 bytes> OP_EQUAL
+ * Hex pattern: a914{40 hex chars}87
+ * Deprecated on BSV since Genesis (Feb 2020) but exists in history.
+ *
+ * @param {string} scriptHex
+ * @returns {{ scriptHash: string }|null}
+ */
+function parseP2SH (scriptHex) {
+  if (scriptHex.length === 46 &&
+      scriptHex.startsWith('a914') &&
+      scriptHex.endsWith('87')) {
+    return { scriptHash: scriptHex.slice(4, 44) }
+  }
+  return null
+}
+
+/**
+ * Detect bare multisig: OP_m <pubkeys> OP_n OP_CHECKMULTISIG
+ *
+ * @param {string} scriptHex
+ * @returns {{ m: number, n: number, pubkeys: string[] }|null}
+ */
+function parseMultisig (scriptHex) {
+  // Must end with OP_CHECKMULTISIG (ae)
+  if (!scriptHex.endsWith('ae')) return null
+
+  const firstByte = parseInt(scriptHex.slice(0, 2), 16)
+  if (firstByte < 0x51 || firstByte > 0x60) return null // not OP_1..OP_16
+  const m = firstByte - 0x50
+
+  // Read public keys
+  const pubkeys = []
+  let offset = 2
+  while (offset < scriptHex.length - 4) { // -4 for OP_n + OP_CHECKMULTISIG
+    const pushLen = parseInt(scriptHex.slice(offset, offset + 2), 16)
+    if (pushLen !== 0x21 && pushLen !== 0x41) break // not 33 or 65 byte key
+    offset += 2
+    pubkeys.push(scriptHex.slice(offset, offset + pushLen * 2))
+    offset += pushLen * 2
+  }
+
+  if (pubkeys.length === 0) return null
+
+  const nByte = parseInt(scriptHex.slice(offset, offset + 2), 16)
+  if (nByte < 0x51 || nByte > 0x60) return null
+  const n = nByte - 0x50
+
+  if (n !== pubkeys.length || m > n) return null
+
+  return { m, n, pubkeys }
+}
+
+// --- Utility ---
+
+function hexToUtf8 (hex) {
+  if (!hex) return ''
+  const bytes = []
+  for (let i = 0; i < hex.length; i += 2) {
+    bytes.push(parseInt(hex.slice(i, i + 2), 16))
+  }
+  return Buffer.from(bytes).toString('utf8')
 }

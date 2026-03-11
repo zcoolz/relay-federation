@@ -3,7 +3,7 @@
 **Goal:** Production-grade bridge software. Real operators can fund, stake, register on-chain without depending on Indelible or WoC. Mesh enforces identity, rejects bad actors, scores peers, and maintains healthy topology.
 
 **Date started:** March 5, 2026
-**Last updated:** March 6, 2026
+**Last updated:** March 8, 2026
 
 ---
 
@@ -80,14 +80,99 @@ These are the acceptance criteria from `relay-federation-roadmap.md`:
 | `PersistentStore` (bridge) | Works | LevelDB store for headers, txs, UTXOs, balance. |
 | Indelible `p2p.js` + `spv-client.js` | Reference code | Full P2P tx capability exists in Indelible codebase. Can reference for 2.19-2.21. |
 
+## Post-Phase 2 Fixes (Mar 7, 2026)
+
+### Header Sync Bug — Live Peer Reuse + Retry Loop
+
+**Problem:** SPV bridges (the 5-node Indelible relay) drifted behind chain tip. Header sync opened its own fragile P2P connections that dropped mid-download. On disconnect, `sync()` gave up entirely — no retry, waited 60s for the next periodic attempt. Also: `headerPromise` listened for `'close'` event but BSVP2P emits `'disconnect'`, so disconnects were never detected (always hit 30s timeout).
+
+**Fix (header-sync.js + server-spv.js):**
+1. `setLiveConnections(connections)` — accepts actual BSVP2P instances from SPV client's stable peers
+2. `connect(failedHosts)` — tries live connections first (already handshaken), falls back to new connections, skips failed hosts
+3. `sync()` — retry loop (max 3 attempts), tracks failed peer hosts between attempts
+4. Event name fix: `'close'` → `'disconnect'` in headerPromise listeners
+5. `close()` — only disconnects if `ownConnection` (don't kill shared SPV peers)
+6. `server-spv.js` periodic sync passes `p2p` instances via `setLiveConnections()`
+
+**Deployed:** enterprise-federation (155.138.216.126) as canary — confirmed working ("Reusing live peer" in logs, sync completing instantly). Pending rollout to other 4 bridges.
+
+**Files:** `/opt/spv-bridge-v2/header-sync.js`, `/opt/spv-bridge-v2/server-spv.js`
+**Local copies:** `C:/Users/oorel/AppData/Local/Temp/bridge-fix/`
+
+### 155.138.254.224 Rollback
+
+Bridge was running federation engine (`spv-engine.js`) from earlier testing — 0 BSV peers, stuck at 930,000. Rolled back to `spv-client.js`. Now connects to BSV peers but this IP still has issues (DNS seeds / BSV nodes refuse handshake from this IP). Works via mesh relay but can't sync headers independently.
+
+### Whitepaper v2 Status
+
+**Done:** Production code updates — native P2P peer discovery (getaddr/addr), Section 9 Supervision & Self-Healing, restructured layers. Located at `C:/bsv-claude-wrapper/whitepaper/federated-spv-relay-mesh.md`.
+
+**Not done (federation sections per `plans/relay-federation-whitepaper-v2-plan.md`):**
+- On-chain bridge registry protocol (OP_RETURN + CBOR)
+- Stake bonds (anti-Sybil)
+- Cryptographic handshake (pubkey challenge-response)
+- Peer scoring formula
+- Eclipse attack resistance
+- Reframing from "Indelible infrastructure" to "BSV developer infrastructure"
+- Signal model positioning
+- Sections 14.1, 14.5, 14.6 should move from Future Work to current (they're built)
+
+## Recent Changes (Mar 8, 2026)
+
+- [x] **Dashboard redesign** — Replaced bubble map with stats hero (4 cards), card grid view, table view (sortable), and search bar. Scales to 1000s of bridges. (`dashboard/index.html`)
+- [x] **Dynamic bridge discovery** — `/discover` endpoint on status server exposes gossip directory over HTTP. Dashboard discovers bridges dynamically from seeds instead of hardcoded array. Re-discovers every 60s. (`bridge/lib/status-server.js`, `bridge/cli.js`)
+- [x] **Operator panel reorder** — Wallet + Actions moved to top of side panel (after Bridge info), above BSV Node/Network/Mempool.
+- [x] **`--config` CLI bug fix** — `process.argv[3]` treated `--config` as a manual peer endpoint, skipping seed peers entirely. Fixed by filtering args starting with `-`. (`bridge/cli.js`)
+- [x] **Endpoint hiding** — `/status` no longer exposes `endpoint` field to unauthenticated requests. Operator-only.
+- [x] **Fund button removal** — Removed Fund action button from dashboard (funding is done externally).
+- [x] **Mempool scrollable** — Mempool list capped at 300px with overflow scroll.
+- [x] **Deployed v0.2.1** — Both VPS running latest. `/discover` confirmed working via curl.
+
+---
+
+## Operational TODO
+
+These are deployment/operations tasks, not code changes.
+
+- [ ] **Fund wallets** — Both bridge wallets at 0 sats. Need BSV sent to register on-chain.
+  - bridge-alpha: `1EEtoaSuniYkoU7q16rohyHcquMNpHBRNC`
+  - bridge-beta: `17og92uejQX3StfdmW63HnDKknF9FYPKc9`
+- [ ] **Register both bridges on-chain** — Requires funded wallets. Use dashboard Register button. Will enable STK scoring (currently 0).
+- [ ] **meshId change** — Change from `"indelible"` to `"70016"` in config on both VPS.
+- [ ] **Header sync fix rollout** — Canary on enterprise-federation (155.138.216.126) confirmed working. Pending rollout to other 4 bridges.
+- [ ] **155.138.254.224 BSV P2P** — This IP can't sync headers independently (BSV nodes refuse handshake). Works via mesh relay only.
+
+---
+
+## Phase 3: Output Parsing & Protocol Support
+
+The bridge currently only decodes P2PKH outputs. To serve developers (like on-chain file storage, inscriptions, metadata), the output parser needs to understand additional script types. This is what makes the bridge useful as developer infrastructure.
+
+**Implementation target:** `bridge/lib/output-parser.js`
+
+- [x] **P2PKH** — Pay-to-address. Already implemented. Extracts address, tracks UTXOs.
+- [x] **OP_RETURN / OP_FALSE OP_RETURN** — Data carrier outputs. Extracts all push data segments, detects protocol prefixes. Foundation for all data protocols below. (`bridge/lib/output-parser.js`)
+- [x] **B:// protocol** — On-chain file storage. Detects `19HxigV4QyBv3tHpQVcUEQyq1pzZVdoAut` prefix, extracts data, mimeType, encoding, filename. (`bridge/lib/output-parser.js`)
+- [x] **BCAT** — Chunked large files. Linker (`15DHFxWZJT58f9nhyGnsRBqrgwK4W6h4Up`) extracts mimeType, charset, filename, chunk txids. Part (`1ChDHzdd1H4wSjgGMHyndZm6qxEDGjqpJL`) extracts raw data. (`bridge/lib/output-parser.js`)
+- [x] **MAP** — Metadata Attachment Protocol. Detects `1PuQa7K62MiKCtssSLKy1kh56WWU7MtUR5` prefix, extracts action + key-value pairs. (`bridge/lib/output-parser.js`)
+- [x] **MetaNet** — Tree-structured data protocol. Detects `"meta"` magic bytes, extracts nodeAddress + parentTxid. (`bridge/lib/output-parser.js`)
+- [x] **1Sat Ordinals + BSV-20** — Inscription protocol. Scans for `OP_FALSE OP_IF OP_PUSH3 "ord"` envelope, extracts contentType + content. Auto-detects BSV-20 tokens (`application/bsv-20`) and parses JSON (op, tick/id, amt). (`bridge/lib/output-parser.js`)
+- [x] **P2SH** — Pay-to-script-hash. Detects `a914[20 bytes]87` pattern, extracts script hash. Deprecated on BSV since Genesis but exists in history. (`bridge/lib/output-parser.js`)
+- [x] **Bare multisig** — `OP_m <pubkeys> OP_n OP_CHECKMULTISIG`. Extracts m, n, and public keys. (`bridge/lib/output-parser.js`)
+- [x] **`/tx/:txid` API endpoint** — Developer-facing API. Fetches tx from mempool/P2P/WoC, parses with full protocol support, returns structured JSON with type/protocol/parsed for every output. (`bridge/lib/status-server.js`)
+- [x] **`/mempool` protocol fields** — Mempool endpoint now includes type, protocol, and parsed data for each output. (`bridge/lib/status-server.js`)
+- [x] **Dashboard protocol support** — Protocol badges (color-coded by type), parsed data display for mempool txs, Transaction Explorer with txid lookup. Clickable mempool txids auto-fill the explorer. (`dashboard/index.html`)
+
+---
+
 ## Notes
 
-- Stake bond builder code exists and is tested (`registry/lib/stake-bond.js`, `registry/test/stake-bond.test.js`) — just not wired into CLI
+- Stake bond builder code exists and is tested (`registry/lib/stake-bond.js`, `registry/test/stake-bond.test.js`) — wired into CLI (2.9)
 - Registration and deregistration tx builders exist and are tested (`registry/lib/registration.js`)
 - CBOR encoding/decoding exists and is tested (`registry/lib/cbor.js`)
-- Chain scanner exists and is tested (`registry/lib/scanner.js`) — needs stake validation added
-- All 278 existing tests pass (0 failures)
-- Current deployed version: v0.1.9
-- Live nodes: federation-gateway (144.202.48.217), indelible-app (45.63.77.31)
-- Indelible bridge code at `C:/Indelible-main/server/` has full P2P tx implementation — reference for bsv-node-client upgrades
-- WoC is used in ONE place: `common/lib/network.js` line 97 — fallback in `fetchTxHex()`. Eliminated when 2.25 is complete.
+- Chain scanner exists and is tested (`registry/lib/scanner.js`) — stake validation added (2.10)
+- All 268 bridge tests pass (0 failures) — 23 new protocol parser tests added
+- Current deployed version: v0.2.1
+- Live nodes: bridge-alpha (144.202.48.217), bridge-beta (45.63.77.31)
+- Federation bridges serve bsvbible.club and chainofthought.news via nginx reverse proxies on VPS1
+- SSH key auth configured for VPS1 (144.202.48.217) — no password needed

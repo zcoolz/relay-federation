@@ -379,7 +379,73 @@
   .tx-parsed-data .val { color: var(--text-secondary); }
   .tx-parsed-data .accent { color: #ffc53d; }
 
-  /* ── Inscriptions tab ────────────────────────────── */
+  /* ── Inscription cards (used by Explorer address view) ── */
+  .inscription-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 10px;
+  }
+  .inscription-card {
+    padding: 14px 16px;
+    overflow: hidden;
+  }
+  .inscription-card .insc-thumb {
+    width: 100%;
+    max-height: 240px;
+    object-fit: contain;
+    border-radius: 6px;
+    margin-bottom: 10px;
+    background: rgba(0,0,0,0.3);
+    cursor: pointer;
+  }
+  .inscription-card .insc-text {
+    width: 100%;
+    max-height: 200px;
+    overflow: auto;
+    padding: 10px;
+    margin-bottom: 10px;
+    border-radius: 6px;
+    background: rgba(0,0,0,0.4);
+    color: var(--text-secondary);
+    font-family: var(--mono);
+    font-size: 11px;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .inscription-card .insc-iframe {
+    width: 100%;
+    height: 200px;
+    border: none;
+    border-radius: 6px;
+    margin-bottom: 10px;
+    background: #fff;
+  }
+  .inscription-card video,
+  .inscription-card audio {
+    width: 100%;
+    border-radius: 6px;
+    margin-bottom: 10px;
+    background: rgba(0,0,0,0.3);
+  }
+  .inscription-card video { max-height: 240px; }
+  .inscription-card .insc-txid {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--accent-blue);
+    cursor: pointer;
+    word-break: break-all;
+  }
+  .inscription-card .insc-txid:hover { text-decoration: underline; }
+  .inscription-card .insc-meta {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 6px;
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  /* ── Inscriptions tab filters ─────────────────────── */
   .inscription-filters {
     display: flex;
     gap: 8px;
@@ -402,29 +468,117 @@
   .inscription-filters select:focus,
   .inscription-filters input:focus { outline: none; border-color: var(--accent-blue); }
 
-  .inscription-grid {
+  /* ── Apps tab ──────────────────────────────────────── */
+  .apps-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 12px;
+  }
+  .app-card {
+    padding: 16px 18px;
+    display: flex;
+    flex-direction: column;
     gap: 10px;
   }
-  .inscription-card {
-    padding: 14px 16px;
+  .app-card-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
   }
-  .inscription-card .insc-txid {
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--accent-blue);
-    cursor: pointer;
-    word-break: break-all;
+  .app-health-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
   }
-  .inscription-card .insc-txid:hover { text-decoration: underline; }
-  .inscription-card .insc-meta {
+  .app-health-dot.online { background: var(--accent-green); box-shadow: 0 0 8px rgba(63,185,80,0.5); }
+  .app-health-dot.degraded { background: var(--accent-yellow); box-shadow: 0 0 8px rgba(210,153,34,0.5); }
+  .app-health-dot.offline { background: var(--accent-red); box-shadow: 0 0 8px rgba(248,81,73,0.5); }
+  .app-health-dot.unknown { background: var(--text-dim); }
+  .app-card-header .app-name {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+    flex: 1;
+  }
+  .app-card-header .app-name a {
+    color: inherit;
+    text-decoration: none;
+  }
+  .app-card-header .app-name a:hover { color: var(--accent-blue); text-decoration: underline; }
+  .ssl-badge {
+    font-size: 10px;
+    font-weight: 500;
+    padding: 2px 8px;
+    border-radius: 10px;
+  }
+  .ssl-badge.valid { background: rgba(63,185,80,0.15); color: var(--accent-green); border: 1px solid rgba(63,185,80,0.3); }
+  .ssl-badge.expiring { background: rgba(210,153,34,0.15); color: var(--accent-yellow); border: 1px solid rgba(210,153,34,0.3); }
+  .ssl-badge.expired { background: rgba(248,81,73,0.15); color: var(--accent-red); border: 1px solid rgba(248,81,73,0.3); }
+  .ssl-badge.unknown { background: var(--bg-surface); color: var(--text-dim); border: 1px solid var(--border); }
+  .app-urls {
     font-size: 11px;
     color: var(--text-muted);
-    margin-top: 6px;
+    font-family: var(--mono);
+    line-height: 1.6;
+  }
+  .app-stat-row {
     display: flex;
+    align-items: center;
     gap: 10px;
-    flex-wrap: wrap;
+    font-size: 12px;
+  }
+  .app-stat-row .label {
+    color: var(--text-muted);
+    min-width: 70px;
+    font-size: 11px;
+  }
+  .app-stat-row .value {
+    color: var(--text-secondary);
+    font-weight: 500;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .app-bar-bg {
+    width: 100%;
+    height: 6px;
+    background: rgba(0,0,0,0.3);
+    border-radius: 3px;
+    overflow: hidden;
+    margin-bottom: 8px;
+  }
+  .app-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.3s;
+  }
+  .app-bar-fill.green { background: var(--accent-green); }
+  .app-bar-fill.yellow { background: var(--accent-yellow); }
+  .app-bar-fill.red { background: var(--accent-red); }
+  .app-bar-fill.blue { background: var(--accent-blue); }
+  .ep-list {
+    font-size: 11px;
+    color: var(--text-muted);
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .ep-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 2px 0;
+  }
+  .ep-row .ep-path { font-family: var(--mono); color: var(--text-secondary); }
+  .ep-row .ep-count { font-family: var(--mono); color: var(--text-muted); }
+  .app-error-box {
+    padding: 8px 12px;
+    border-radius: 6px;
+    background: rgba(248,81,73,0.1);
+    border: 1px solid rgba(248,81,73,0.2);
+    font-size: 11px;
+    color: var(--accent-red);
+    font-family: var(--mono);
+    word-break: break-all;
   }
 
   /* ── Peers ───────────────────────────────────────── */
@@ -640,8 +794,9 @@
   <div class="header-tabs" id="headerTabs">
     <button class="active" onclick="setTab('overview')">Overview</button>
     <button onclick="setTab('mempool')">Mempool</button>
-    <button onclick="setTab('explorer')">Tx Explorer</button>
+    <button onclick="setTab('explorer')">Explorer</button>
     <button onclick="setTab('inscriptions')">Inscriptions</button>
+    <button onclick="setTab('apps')">Apps</button>
   </div>
   <div class="header-right">
     <div class="header-stats">
@@ -778,6 +933,7 @@ let jobSSE = null;
 let activeTab = 'overview';
 let savedExplorerInput = '';
 let savedExplorerResult = '';
+let appsData = null;
 
 try { const saved = localStorage.getItem('relay_operator_tokens'); if (saved) operatorTokens = JSON.parse(saved); } catch {}
 
@@ -874,7 +1030,7 @@ async function pollAll() {
   }
   renderHeader();
   renderBridgeRail();
-  renderActiveTab();
+  renderActiveTab(true);
 }
 
 // ── Header stats ───────────────────────────────────
@@ -904,7 +1060,9 @@ function renderBridgeRail() {
     const sel = selectedBridge === name ? ' selected' : '';
     html += '<div class="rail-item' + sel + '" onclick="selectBridge(\'' + name + '\')">';
     html += '<span class="status-dot ' + dotColor + '"></span>';
-    html += '<span class="rail-name">' + name + '</span>';
+    html += '<div style="display:flex;flex-direction:column;flex:1;min-width:0"><span class="rail-name">' + name + '</span>';
+    const ip = (b._url || '').replace(/^https?:\/\//, '').replace(/:\d+$/, '');
+    html += '<span style="font-size:10px;color:var(--text-muted);opacity:0.6">' + ip + '</span></div>';
     if (b._error) html += '<span class="rail-height offline">off</span>';
     else html += '<span class="rail-height">' + fmtHeight(b.headers.bestHeight) + '</span>';
     html += '</div>';
@@ -923,19 +1081,29 @@ function setTab(tab) {
   }
   activeTab = tab;
   const buttons = document.querySelectorAll('#headerTabs button');
-  const tabs = ['overview', 'mempool', 'explorer', 'inscriptions'];
+  const tabs = ['overview', 'mempool', 'explorer', 'inscriptions', 'apps'];
   buttons.forEach((btn, i) => btn.classList.toggle('active', tabs[i] === tab));
   renderActiveTab();
+  if (tab === 'apps') setTimeout(fetchAppsData, 50);
 }
 
-function renderActiveTab() {
+function renderActiveTab(fromPoll) {
   const el = document.getElementById('tabContent');
+  // Skip apps/explorer re-render during poll (preserves state)
+  if (fromPoll && (activeTab === 'apps' || activeTab === 'explorer' || activeTab === 'inscriptions')) return;
+  let html;
   switch (activeTab) {
-    case 'overview': el.innerHTML = renderOverviewTab(); break;
-    case 'mempool': el.innerHTML = renderMempoolTab(); break;
-    case 'explorer': el.innerHTML = renderExplorerTab(); restoreExplorer(); break;
-    case 'inscriptions': el.innerHTML = renderInscriptionsTab(); break;
-    default: el.innerHTML = renderOverviewTab();
+    case 'overview': html = renderOverviewTab(); break;
+    case 'mempool': html = renderMempoolTab(); break;
+    case 'explorer': html = renderExplorerTab(); break;
+    case 'inscriptions': html = renderInscriptionsTab(); break;
+    case 'apps': html = renderAppsTab(); break;
+    default: html = renderOverviewTab();
+  }
+  // Only update DOM if content actually changed (prevents flash)
+  if (el.innerHTML !== html) {
+    el.innerHTML = html;
+    if (activeTab === 'explorer') restoreExplorer();
   }
 }
 
@@ -1098,15 +1266,243 @@ function renderMempoolTab() {
 // ── Tx Explorer tab ────────────────────────────────
 function renderExplorerTab() {
   const b = bridgeData.get(selectedBridge);
-  const url = b ? b._url : '';
+  let html = '<div class="tab-title">Explorer</div>';
 
-  let html = '<div class="tab-title">Transaction Explorer</div>';
+  // Block ticker
+  if (b && !b._error) {
+    const height = b.headers ? b.headers.bestHeight : 0;
+    const peers = b.peers ? b.peers.connected : 0;
+    html += '<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;margin-bottom:12px;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:var(--radius-sm);font-size:11px;color:var(--text-muted)">';
+    html += '<span class="status-dot green pulse" style="display:inline-block;width:6px;height:6px;border-radius:50%"></span>';
+    html += 'Latest block: <strong style="color:var(--text-secondary)">' + fmtHeight(height) + '</strong>';
+    html += ' &middot; <strong style="color:var(--text-secondary)">' + peers + '</strong> peers connected';
+    html += '</div>';
+  }
+
   html += '<div class="explorer-search">';
-  html += '<input type="text" id="txLookupInput" placeholder="Paste txid (64 hex chars)" onkeydown="if(event.key===\'Enter\')lookupTx(\'' + url + '\')">';
-  html += '<button class="btn primary" onclick="lookupTx(\'' + url + '\')">Lookup</button>';
+  html += '<input type="text" id="txLookupInput" placeholder="Paste a txid or BSV address..." onkeydown="if(event.key===\'Enter\')explorerSearch()">';
+  html += '<button class="btn primary" onclick="explorerSearch()">Lookup</button>';
   html += '</div>';
   html += '<div id="txLookupResult"></div>';
+
+  // Guided examples + live stream as empty state (only when nothing searched)
+  if (!savedExplorerResult) {
+    html += '<div style="margin-top:16px">';
+    html += '<div style="font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Try these</div>';
+    html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px">';
+    const examples = [
+      { label: 'MetaNet tx', badge: 'metanet', txid: '5dac856f1580693e5623bf09b2f34791ef746930f298368f9adad424bf2e1aa1' },
+      { label: 'B:// file', badge: 'b', txid: '822463bd53681de0327f58d27b3cc0a792f8176fdc75e79fc256cf77d500097f' },
+      { label: 'Ordinal NFT', badge: 'ordinal', txid: 'de7a573dee3aa95ded0d73d1dd5f5cc2b603186c220a4a7a0f15b15ff3a32431' },
+      { label: 'BSV-20 token', badge: 'bsv-20', txid: 'df356acebad6642bf7859d2de48eb3d6e3917d9cd360dcb8eea02ca7d7602206' }
+    ];
+    for (const ex of examples) {
+      html += '<button style="display:flex;align-items:center;gap:6px;padding:6px 12px;background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:6px;color:var(--text-secondary);font-size:12px;cursor:pointer" onclick="document.getElementById(\'txLookupInput\').value=\'' + ex.txid + '\';explorerSearch()">';
+      html += protocolBadge('op_return', ex.badge);
+      html += ex.label;
+      html += '</button>';
+    }
+    html += '</div>';
+    html += '</div>';
+    html += '<div id="explorerLiveStream"></div>';
+    setTimeout(renderExplorerLiveStream, 50);
+  }
+
   return html;
+}
+
+async function renderExplorerLiveStream() {
+  const el = document.getElementById('explorerLiveStream');
+  if (!el) return;
+  const b = bridgeData.get(selectedBridge);
+  if (!b) { el.innerHTML = ''; return; }
+
+  try {
+    const r = await fetch(b._url + '/mempool', { signal: AbortSignal.timeout(8000) });
+    const data = await r.json();
+    const txs = data.transactions || [];
+    if (txs.length === 0) {
+      el.innerHTML = '<div style="color:var(--text-dim);font-size:12px;text-align:center;padding:20px">No transactions in mempool right now</div>';
+      return;
+    }
+    let html = '<div style="font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Live transactions</div>';
+    const show = txs.slice(0, 20);
+    for (const tx of show) {
+      const badges = (tx.outputs || []).filter(o => o.type !== 'p2pkh' && o.type !== 'p2sh').map(o => protocolBadge(o.type, o.protocol)).join(' ');
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 10px;margin-bottom:4px;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:6px;cursor:pointer" onclick="document.getElementById(\'txLookupInput\').value=\'' + tx.txid + '\';explorerSearch()">';
+      html += '<div style="display:flex;align-items:center;gap:8px">';
+      html += '<span style="font-family:var(--mono);font-size:11px;color:var(--accent-blue)">' + tx.txid.slice(0, 12) + '...' + tx.txid.slice(-6) + '</span>';
+      if (badges) html += badges;
+      html += '</div>';
+      html += '<span style="font-size:11px;color:var(--text-dim)">' + (tx.size || 0) + 'B</span>';
+      html += '</div>';
+    }
+    if (txs.length > 20) html += '<div style="font-size:11px;color:var(--text-dim);text-align:center;margin-top:4px">+ ' + (txs.length - 20) + ' more in mempool</div>';
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = '';
+  }
+}
+
+function detectSearchType(input) {
+  if (!input) return null;
+  if (/^[0-9a-fA-F]{64}$/.test(input)) return 'txid';
+  if (/^[13][a-km-zA-HJ-NP-Z1-9]{24,33}$/.test(input)) return 'address';
+  return null;
+}
+
+function explorerSearch() {
+  const input = document.getElementById('txLookupInput');
+  const val = input ? input.value.trim() : '';
+  const el = document.getElementById('txLookupResult');
+  if (!el) return;
+  const type = detectSearchType(val);
+  if (type === 'txid') {
+    const b = bridgeData.get(selectedBridge);
+    if (b) lookupTx(b._url);
+    return;
+  }
+  if (type === 'address') {
+    savedExplorerInput = val;
+    lookupAddress(val);
+    return;
+  }
+  el.innerHTML = '<div style="color:var(--accent-red);font-size:12px;margin-top:12px">Enter a valid txid or BSV address</div>';
+}
+
+async function lookupAddress(address) {
+  const el = document.getElementById('txLookupResult');
+  if (!el) return;
+  const b = bridgeData.get(selectedBridge);
+  if (!b) { el.innerHTML = '<div style="color:var(--accent-red);font-size:12px;margin-top:12px">Select a bridge first</div>'; return; }
+
+  el.innerHTML = '<div style="color:var(--text-muted);font-size:12px;margin-top:12px">Loading address history...</div>';
+
+  let historyHtml = '';
+  let inscHtml = '';
+
+  // Fetch tx history and inscriptions in parallel
+  try {
+    const [histRes, inscRes] = await Promise.all([
+      fetch(b._url + '/address/' + address + '/history', { signal: AbortSignal.timeout(15000) }).then(r => r.ok ? r.json() : { history: [] }).catch(() => ({ history: [] })),
+      fetch(b._url + '/inscriptions?address=' + encodeURIComponent(address) + '&limit=50', { signal: AbortSignal.timeout(10000) }).then(r => r.ok ? r.json() : { inscriptions: [], total: 0 }).catch(() => ({ inscriptions: [], total: 0 }))
+    ]);
+
+    // Transaction history section
+    const txs = histRes.history || [];
+    historyHtml = '<div class="glass" style="padding:16px;margin-top:12px">';
+    historyHtml += '<div style="font-size:13px;color:var(--text-primary);font-weight:600;margin-bottom:10px">Transaction History</div>';
+    if (txs.length === 0) {
+      historyHtml += '<div style="color:var(--text-dim);font-size:12px">No transactions found for this address</div>';
+    } else {
+      historyHtml += '<div style="color:var(--text-muted);font-size:11px;margin-bottom:8px">' + txs.length + ' transaction' + (txs.length !== 1 ? 's' : '') + '</div>';
+      const show = txs.slice(0, 50);
+      for (const tx of show) {
+        historyHtml += '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)">';
+        historyHtml += '<span class="addr-tx-link" style="font-family:var(--mono);font-size:11px;color:var(--accent-blue);cursor:pointer" onclick="document.getElementById(\'txLookupInput\').value=\'' + tx.tx_hash + '\';explorerSearch()">' + tx.tx_hash.slice(0, 12) + '...' + tx.tx_hash.slice(-8) + '</span>';
+        historyHtml += '<span style="font-size:11px;color:var(--text-dim)">' + (tx.height > 0 ? 'block ' + tx.height.toLocaleString() : '<span style="color:var(--accent-yellow)">unconfirmed</span>') + '</span>';
+        historyHtml += '</div>';
+      }
+      if (txs.length > 50) historyHtml += '<div style="color:var(--text-dim);font-size:11px;margin-top:6px">... and ' + (txs.length - 50) + ' more</div>';
+    }
+    historyHtml += '</div>';
+
+    // Inscriptions section
+    const inscs = inscRes.inscriptions || [];
+    inscHtml = '<div class="glass" style="padding:16px;margin-top:12px">';
+    inscHtml += '<div style="font-size:13px;color:var(--text-primary);font-weight:600;margin-bottom:10px">Inscriptions</div>';
+    if (inscs.length === 0) {
+      inscHtml += '<div style="color:var(--text-dim);font-size:12px;margin-bottom:8px">No inscriptions indexed for this address</div>';
+      inscHtml += '<button class="btn sm" style="background:rgba(88,166,255,0.15);color:var(--accent-blue);border:1px solid rgba(88,166,255,0.3)" onclick="startAddressScan(\'' + escapeHtml(address) + '\')">Scan for inscriptions</button>';
+    } else {
+      inscHtml += '<div style="color:var(--text-muted);font-size:11px;margin-bottom:8px">' + inscs.length + ' inscription' + (inscs.length !== 1 ? 's' : '') + '</div>';
+      inscHtml += '<div class="inscription-grid">';
+      for (const insc of inscs) {
+        inscHtml += '<div class="inscription-card glass">';
+        const src = '/inscription/' + insc.txid + '/' + insc.vout + '/content';
+        const ct = insc.contentType || '';
+        if (ct.startsWith('image/')) {
+          inscHtml += '<img class="insc-thumb" src="' + src + '" alt="inscription" loading="lazy" onclick="window.open(\'' + src + '\',\'_blank\')">';
+        } else if (ct === 'text/plain' || ct === 'application/json' || ct === 'application/bsv-20') {
+          inscHtml += '<div class="insc-text" data-src="' + src + '">Loading...</div>';
+        }
+        inscHtml += '<div class="insc-txid" style="cursor:pointer;color:var(--accent-blue)" onclick="document.getElementById(\'txLookupInput\').value=\'' + insc.txid + '\';explorerSearch()">' + insc.txid.slice(0, 16) + '...:' + insc.vout + '</div>';
+        inscHtml += '<div class="insc-meta">';
+        inscHtml += protocolBadge('ordinal', insc.isBsv20 ? 'bsv-20' : 'ordinal');
+        if (insc.contentType) inscHtml += '<span>' + escapeHtml(insc.contentType) + '</span>';
+        if (insc.contentSize) inscHtml += '<span>' + insc.contentSize + ' bytes</span>';
+        inscHtml += '</div>';
+        inscHtml += '</div>';
+      }
+      inscHtml += '</div>';
+    }
+    inscHtml += '</div>';
+  } catch (e) {
+    historyHtml = '<div style="color:var(--accent-red);font-size:12px;margin-top:12px">' + escapeHtml(e.message) + '</div>';
+  }
+
+  const headerHtml = '<div style="font-size:12px;color:var(--text-muted);margin-top:12px;margin-bottom:4px">Address: <span style="font-family:var(--mono);color:var(--text-secondary)">' + escapeHtml(address) + '</span></div>';
+  el.innerHTML = headerHtml + historyHtml + inscHtml;
+  savedExplorerResult = el.innerHTML;
+
+  // Lazy-load text content in inscription cards
+  el.querySelectorAll('.insc-text[data-src]').forEach(div => {
+    fetch(div.dataset.src).then(r => r.text()).then(t => {
+      try { t = JSON.stringify(JSON.parse(t), null, 2); } catch {}
+      div.textContent = t;
+    }).catch(() => { div.textContent = '[failed to load]'; });
+  });
+}
+
+function startAddressScan(address) {
+  const b = bridgeData.get(selectedBridge);
+  if (!b) return;
+  const el = document.getElementById('txLookupResult');
+  if (!el) return;
+  const scanDiv = document.createElement('div');
+  scanDiv.id = 'explorerScanProgress';
+  scanDiv.className = 'glass';
+  scanDiv.style.cssText = 'padding:12px;margin-top:12px';
+  scanDiv.innerHTML = '<div style="color:var(--text-secondary);font-size:13px">Scanning <span style="font-family:var(--mono);color:var(--accent-blue)">' + escapeHtml(address) + '</span>...</div><div style="margin-top:8px;height:4px;background:var(--bg-input);border-radius:2px;overflow:hidden"><div id="explorerScanBar" style="width:0%;height:100%;background:var(--accent-blue);transition:width 0.3s"></div></div><div id="explorerScanStatus" style="font-size:11px;color:var(--text-muted);margin-top:6px"></div>';
+  el.appendChild(scanDiv);
+
+  fetch(b._url + '/scan-address', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address }) })
+  .then(res => {
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    function pump() {
+      return reader.read().then(({ done, value }) => {
+        if (done) return;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const ev = JSON.parse(line.slice(6));
+            const bar = document.getElementById('explorerScanBar');
+            const status = document.getElementById('explorerScanStatus');
+            if (ev.phase === 'scanning' && ev.total > 0) {
+              const pct = Math.round((ev.current / ev.total) * 100);
+              if (bar) bar.style.width = pct + '%';
+              if (status) status.textContent = ev.current + '/' + ev.total + (ev.found > 0 ? ' — found ' + ev.found + ' inscription(s)' : '');
+            } else if (ev.phase === 'done' || ev.phase === 'complete') {
+              if (bar) { bar.style.width = '100%'; bar.style.background = 'var(--accent-green)'; }
+              if (status) status.textContent = ev.result ? ev.result.inscriptionsFound + ' inscriptions found' : 'Scan complete';
+              setTimeout(() => lookupAddress(address), 1000);
+            } else if (ev.phase === 'error') {
+              if (bar) bar.style.background = 'var(--accent-red)';
+              if (status) status.textContent = 'Error: ' + (ev.error || 'unknown');
+            }
+          } catch {}
+        }
+        return pump();
+      });
+    }
+    return pump();
+  })
+  .catch(e => { scanDiv.innerHTML = '<div style="color:var(--accent-red)">Scan failed: ' + escapeHtml(e.message) + '</div>'; });
 }
 
 function restoreExplorer() {
@@ -1145,12 +1541,21 @@ async function lookupTx(bridgeUrl) {
 
 function renderTxDetail(tx) {
   let html = '<div class="glass" style="padding:16px;margin-top:12px">';
+  const src = (tx.source || '').toLowerCase();
+  const isLocal = src === 'local' || src === 'p2p' || src === 'mempool' || src === 'store';
+  const srcDot = isLocal ? 'green' : 'blue';
+  const srcLabel = src === 'woc' ? 'Fetched from WhatsOnChain' : src === 'store' ? 'From your bridge\'s index' : isLocal ? 'Fetched from BSV network' : 'Source: ' + escapeHtml(tx.source || '?');
+  const b = bridgeData.get(selectedBridge);
+  const peerCount = b ? b.peers.connected : 0;
   html += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">';
-  html += 'Source: <span style="color:var(--text-secondary)">' + escapeHtml(tx.source || '?') + '</span>';
+  html += '<span class="status-dot ' + srcDot + '" style="display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;vertical-align:middle"></span>';
+  html += '<span style="color:var(--text-secondary)">' + srcLabel + '</span>';
   html += ' &middot; ' + (tx.size || 0) + ' bytes';
   html += ' &middot; ' + (tx.inputs ? tx.inputs.length : 0) + ' in';
   html += ' &middot; ' + (tx.outputs ? tx.outputs.length : 0) + ' out';
   html += '</div>';
+  html += '<div style="font-size:11px;color:var(--text-dim);margin-bottom:12px">Your bridge is connected to <strong style="color:var(--text-muted)">' + peerCount + ' peers</strong> on the BSV network</div>';
+  let decodedCallout = false;
   if (tx.outputs) {
     for (const o of tx.outputs) {
       html += '<div class="tx-detail-output">';
@@ -1159,8 +1564,14 @@ function renderTxDetail(tx) {
       html += '<span style="font-family:var(--mono);font-size:12px;color:var(--text-secondary)">' + fmtSats(o.satoshis) + ' sats</span>';
       html += '</div>';
       if (o.hash160) html += '<div style="font-size:10px;color:var(--text-dim);font-family:var(--mono);margin-top:3px">hash160: ' + o.hash160 + '</div>';
-      if (o.parsed) html += renderParsedData(o.type, o.protocol, o.parsed);
-      else if (o.type === 'op_return' && o.data && o.data.length > 0) html += renderRawOpReturn(o.data);
+      if (o.parsed) {
+        html += renderParsedData(o.type, o.protocol, o.parsed);
+        if (!decodedCallout) { html += '<div style="font-size:10px;color:var(--text-dim);margin-top:6px;font-style:italic">Decoded by your bridge \u2014 block explorers show this as raw hex</div>'; decodedCallout = true; }
+      }
+      else if (o.type === 'op_return' && o.data && o.data.length > 0) {
+        html += renderRawOpReturn(o.data);
+        if (!decodedCallout) { html += '<div style="font-size:10px;color:var(--text-dim);margin-top:6px;font-style:italic">Decoded by your bridge \u2014 block explorers show this as raw hex</div>'; decodedCallout = true; }
+      }
       html += '</div>';
     }
   }
@@ -1237,87 +1648,7 @@ function renderParsedData(type, protocol, parsed) {
   return html;
 }
 
-// ── Inscriptions tab ───────────────────────────────
-function renderInscriptionsTab() {
-  const b = bridgeData.get(selectedBridge);
-  if (!b) return '<div class="no-results">Select a bridge</div>';
 
-  let html = '<div class="tab-title">Inscriptions</div>';
-  html += '<div class="inscription-filters">';
-  html += '<select id="mimeFilter">';
-  html += '<option value="">All types</option>';
-  html += '<option value="image/png">image/png</option>';
-  html += '<option value="image/jpeg">image/jpeg</option>';
-  html += '<option value="image/webp">image/webp</option>';
-  html += '<option value="image/svg+xml">image/svg+xml</option>';
-  html += '<option value="text/plain">text/plain</option>';
-  html += '<option value="text/html">text/html</option>';
-  html += '<option value="application/json">application/json</option>';
-  html += '<option value="application/bsv-20">BSV-20 tokens</option>';
-  html += '</select>';
-  html += '<input type="text" id="addressFilter" placeholder="Filter by address...">';
-  html += '<button class="btn primary sm" onclick="fetchInscriptions()">Search</button>';
-  html += '</div>';
-  html += '<div id="inscriptionResults"><div style="color:var(--text-dim);text-align:center;padding:30px">Click Search to load inscriptions from the bridge index</div></div>';
-  return html;
-}
-
-async function fetchInscriptions() {
-  const b = bridgeData.get(selectedBridge);
-  if (!b) return;
-  const mime = document.getElementById('mimeFilter')?.value || '';
-  const address = document.getElementById('addressFilter')?.value.trim() || '';
-  const el = document.getElementById('inscriptionResults');
-  if (!el) return;
-
-  el.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:30px">Loading...</div>';
-
-  let url = b._url + '/inscriptions?limit=50';
-  if (mime) url += '&mime=' + encodeURIComponent(mime);
-  if (address) url += '&address=' + encodeURIComponent(address);
-
-  try {
-    const r = await fetch(url, { signal: AbortSignal.timeout(10000) });
-    const data = await r.json();
-    if (data.error) { el.innerHTML = '<div style="color:var(--accent-red);padding:20px">' + escapeHtml(data.error) + '</div>'; return; }
-    renderInscriptionList(el, data);
-  } catch (e) {
-    el.innerHTML = '<div style="color:var(--accent-red);padding:20px">' + escapeHtml(e.message) + '</div>';
-  }
-}
-
-function renderInscriptionList(el, data) {
-  if (data.inscriptions.length === 0) {
-    el.innerHTML = '<div class="glass" style="padding:30px;text-align:center"><div style="color:var(--text-dim)">No inscriptions found</div><div style="color:var(--text-dim);font-size:11px;margin-top:4px">' + data.total + ' total indexed</div></div>';
-    return;
-  }
-
-  let html = '<div style="color:var(--text-muted);font-size:11px;margin-bottom:10px">' + data.count + ' results &middot; ' + data.total + ' total indexed</div>';
-  html += '<div class="inscription-grid">';
-  for (const insc of data.inscriptions) {
-    html += '<div class="inscription-card glass">';
-    html += '<div class="insc-txid" onclick="setTab(\'explorer\');setTimeout(()=>{const i=document.getElementById(\'txLookupInput\');if(i){i.value=\'' + insc.txid + '\';const b=bridgeData.get(selectedBridge);if(b)lookupTx(b._url)}},50)">' + insc.txid + ':' + insc.vout + '</div>';
-    html += '<div class="insc-meta">';
-    html += protocolBadge('ordinal', insc.isBsv20 ? 'bsv-20' : 'ordinal');
-    if (insc.contentType) html += '<span>' + escapeHtml(insc.contentType) + '</span>';
-    if (insc.contentSize) html += '<span>' + insc.contentSize + ' bytes</span>';
-    html += '<span>' + new Date(insc.timestamp).toLocaleString() + '</span>';
-    html += '</div>';
-    if (insc.isBsv20 && insc.bsv20) {
-      html += '<div style="font-size:11px;margin-top:6px;color:var(--text-muted)">';
-      html += 'Op: <span style="color:#ffc53d">' + escapeHtml(insc.bsv20.op || '-') + '</span>';
-      if (insc.bsv20.tick) html += ' &middot; Tick: <span style="color:var(--text-secondary)">' + escapeHtml(insc.bsv20.tick) + '</span>';
-      if (insc.bsv20.amt) html += ' &middot; Amt: <span style="color:var(--text-secondary)">' + escapeHtml(insc.bsv20.amt) + '</span>';
-      html += '</div>';
-    }
-    if (insc.address) {
-      html += '<div style="font-size:10px;margin-top:4px;color:var(--text-dim);font-family:var(--mono)">addr: ' + insc.address + '</div>';
-    }
-    html += '</div>';
-  }
-  html += '</div>';
-  el.innerHTML = html;
-}
 
 // ── Mini peer map ──────────────────────────────────
 function renderMiniMap(b) {
@@ -1370,7 +1701,9 @@ function closeModal() { document.getElementById('modalOverlay').classList.remove
 
 function showAuthModal(bridgeUrl) {
   const existing = operatorTokens[bridgeUrl] || '';
-  openModal('<h2>Operator Login</h2><div class="form-group"><label>statusSecret (from bridge config.json)</label><input type="password" id="authInput" value="' + existing + '" placeholder="64-char hex token"></div><div class="modal-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn primary" onclick="saveAuth(\'' + bridgeUrl + '\')">Login</button></div>');
+  const bName = BRIDGES.find(b => b.url === bridgeUrl)?.name || '';
+  const bIp = bridgeUrl.replace(/^https?:\/\//, '').replace(/:\d+$/, '');
+  openModal('<h2>Operator Login</h2><div style="margin-bottom:12px;font-size:13px;color:var(--text-secondary)">' + bName + ' &mdash; ' + bIp + '</div><div class="form-group"><label>statusSecret (from bridge config.json)</label><input type="password" id="authInput" value="' + existing + '" placeholder="64-char hex token"></div><div class="modal-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn primary" onclick="saveAuth(\'' + bridgeUrl + '\')">Login</button></div>');
   setTimeout(() => document.getElementById('authInput').focus(), 100);
 }
 function saveAuth(bridgeUrl) { const t = document.getElementById('authInput').value.trim(); if (!t) delete operatorTokens[bridgeUrl]; else operatorTokens[bridgeUrl] = t; localStorage.setItem('relay_operator_tokens', JSON.stringify(operatorTokens)); closeModal(); pollAll(); }
@@ -1417,6 +1750,304 @@ function streamJob(streamUrl) {
   jobSSE.onerror = () => { appendJobLog('error', 'SSE connection lost'); jobSSE.close(); jobSSE = null; };
 }
 function appendJobLog(type, message) { const log = document.getElementById('jobLog'); if (!log) return; log.style.display = 'block'; const line = document.createElement('div'); line.className = type; line.textContent = message; log.appendChild(line); log.scrollTop = log.scrollHeight; }
+
+// ── Inscriptions tab ───────────────────────────────
+function renderInscriptionsTab() {
+  const b = bridgeData.get(selectedBridge);
+  if (!b) return '<div class="no-results">Select a bridge</div>';
+
+  let html = '<div class="tab-title">Inscriptions</div>';
+  html += '<div class="inscription-filters">';
+  html += '<select id="mimeFilter">';
+  html += '<option value="">All types</option>';
+  html += '<option value="image/png">image/png</option>';
+  html += '<option value="image/jpeg">image/jpeg</option>';
+  html += '<option value="image/webp">image/webp</option>';
+  html += '<option value="image/svg+xml">image/svg+xml</option>';
+  html += '<option value="text/plain">text/plain</option>';
+  html += '<option value="text/html">text/html</option>';
+  html += '<option value="application/json">application/json</option>';
+  html += '<option value="application/bsv-20">BSV-20 tokens</option>';
+  html += '</select>';
+  html += '<input type="text" id="addressFilter" placeholder="Filter by address...">';
+  html += '<button class="btn primary sm" onclick="fetchInscriptions()">Search</button>';
+  html += '<button class="btn sm" style="margin-left:8px;background:rgba(88,166,255,0.15);color:var(--accent-blue);border:1px solid rgba(88,166,255,0.3)" onclick="promptScanAddress()">Scan Address</button>';
+  html += '</div>';
+  html += '<div id="scanProgress" style="display:none"></div>';
+  html += '<div id="inscriptionResults"><div style="color:var(--text-dim);text-align:center;padding:30px">Click Search to load inscriptions from the bridge index, or Scan Address to import from the blockchain</div></div>';
+  return html;
+}
+
+async function fetchInscriptions() {
+  const b = bridgeData.get(selectedBridge);
+  if (!b) return;
+  const mime = document.getElementById('mimeFilter')?.value || '';
+  const address = document.getElementById('addressFilter')?.value.trim() || '';
+  const el = document.getElementById('inscriptionResults');
+  if (!el) return;
+
+  el.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:30px">Loading...</div>';
+
+  let url = b._url + '/inscriptions?limit=50';
+  if (mime) url += '&mime=' + encodeURIComponent(mime);
+  if (address) url += '&address=' + encodeURIComponent(address);
+
+  try {
+    const r = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    const data = await r.json();
+    if (data.error) { el.innerHTML = '<div style="color:var(--accent-red);padding:20px">' + escapeHtml(data.error) + '</div>'; return; }
+    renderInscriptionList(el, data);
+  } catch (e) {
+    el.innerHTML = '<div style="color:var(--accent-red);padding:20px">' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+function renderInscriptionList(el, data) {
+  if (data.inscriptions.length === 0) {
+    el.innerHTML = '<div class="glass" style="padding:30px;text-align:center"><div style="color:var(--text-dim)">No inscriptions found</div><div style="color:var(--text-dim);font-size:11px;margin-top:4px">' + data.total + ' total indexed</div></div>';
+    return;
+  }
+
+  let html = '<div style="color:var(--text-muted);font-size:11px;margin-bottom:10px">' + data.count + ' results &middot; ' + data.total + ' total indexed</div>';
+  html += '<div class="inscription-grid">';
+  for (const insc of data.inscriptions) {
+    html += '<div class="inscription-card glass">';
+    if (insc.contentType && insc.contentType.startsWith('image/')) {
+      const src = '/inscription/' + insc.txid + '/' + insc.vout + '/content';
+      html += '<img class="insc-thumb" src="' + src + '" alt="inscription" loading="lazy" onclick="window.open(\'' + src + '\',\'_blank\')">';
+    }
+    html += '<div class="insc-txid" onclick="setTab(\'explorer\');setTimeout(()=>{const i=document.getElementById(\'txLookupInput\');if(i){i.value=\'' + insc.txid + '\';explorerSearch()}},50)">' + insc.txid + ':' + insc.vout + '</div>';
+    html += '<div class="insc-meta">';
+    html += protocolBadge('ordinal', insc.isBsv20 ? 'bsv-20' : 'ordinal');
+    if (insc.contentType) html += '<span>' + escapeHtml(insc.contentType) + '</span>';
+    if (insc.contentSize) html += '<span>' + insc.contentSize + ' bytes</span>';
+    html += '<span>' + new Date(insc.timestamp).toLocaleString() + '</span>';
+    html += '</div>';
+    if (insc.isBsv20 && insc.bsv20) {
+      html += '<div style="font-size:11px;margin-top:6px;color:var(--text-muted)">';
+      html += 'Op: <span style="color:#ffc53d">' + escapeHtml(insc.bsv20.op || '-') + '</span>';
+      if (insc.bsv20.tick) html += ' &middot; Tick: <span style="color:var(--text-secondary)">' + escapeHtml(insc.bsv20.tick) + '</span>';
+      if (insc.bsv20.amt) html += ' &middot; Amt: <span style="color:var(--text-secondary)">' + escapeHtml(insc.bsv20.amt) + '</span>';
+      html += '</div>';
+    }
+    if (insc.address) {
+      html += '<div style="font-size:10px;margin-top:4px;color:var(--text-dim);font-family:var(--mono)">addr: ' + insc.address + '</div>';
+    }
+    html += '</div>';
+  }
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+// ── Address scanner ────────────────────────────────
+function promptScanAddress() {
+  const addr = document.getElementById('addressFilter')?.value.trim();
+  if (addr) { startScanAddress(addr); return; }
+  openModal(
+    '<h3 style="margin-bottom:12px;color:var(--text-primary)">Scan Address</h3>' +
+    '<p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">Enter a BSV address to scan for inscriptions. This will fetch transaction history from WhatsOnChain and index any ordinal inscriptions found.</p>' +
+    '<input type="text" id="scanAddressInput" placeholder="1Abc..." style="width:100%;padding:8px 12px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-family:var(--mono);font-size:13px;margin-bottom:12px">' +
+    '<button class="btn primary" onclick="startScanAddress(document.getElementById(\'scanAddressInput\').value.trim());closeModal()">Start Scan</button>'
+  );
+}
+
+async function startScanAddress(address) {
+  if (!address || address.length < 25 || address.length > 35) {
+    const el = document.getElementById('scanProgress');
+    if (el) { el.style.display = 'block'; el.innerHTML = '<div class="glass" style="padding:12px;color:var(--accent-red)">Invalid address</div>'; }
+    return;
+  }
+  const b = bridgeData.get(selectedBridge);
+  if (!b) return;
+
+  const el = document.getElementById('scanProgress');
+  if (!el) return;
+  el.style.display = 'block';
+  el.innerHTML = '<div class="glass" style="padding:12px"><div style="color:var(--text-secondary);font-size:13px">Starting scan for <span style="font-family:var(--mono);color:var(--accent-blue)">' + escapeHtml(address) + '</span>...</div><div id="scanProgressBar" style="margin-top:8px;height:4px;background:var(--bg-input);border-radius:2px;overflow:hidden"><div id="scanBar" style="width:0%;height:100%;background:var(--accent-blue);transition:width 0.3s"></div></div><div id="scanStatus" style="font-size:11px;color:var(--text-muted);margin-top:6px"></div></div>';
+
+  try {
+    const res = await fetch(b._url + '/scan-address', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ address })
+    });
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const ev = JSON.parse(line.slice(6));
+          const bar = document.getElementById('scanBar');
+          const status = document.getElementById('scanStatus');
+          if (ev.phase === 'scanning' && ev.total > 0) {
+            const pct = Math.round((ev.current / ev.total) * 100);
+            if (bar) bar.style.width = pct + '%';
+            if (status) {
+              let msg = ev.current + '/' + ev.total;
+              if (ev.found > 0) msg += ' — found ' + ev.found + ' inscription(s)';
+              if (ev.error) msg += ' — error: ' + ev.error;
+              status.textContent = msg;
+            }
+          } else if (ev.phase === 'discovery') {
+            if (status) status.textContent = ev.message || 'Discovering...';
+          } else if (ev.phase === 'done' || ev.phase === 'complete') {
+            if (bar) bar.style.width = '100%';
+            if (bar) bar.style.background = 'var(--accent-green)';
+            if (status) status.textContent = ev.message || 'Scan complete';
+            if (ev.result) {
+              status.textContent = 'Done: ' + ev.result.txsScanned + ' txs scanned, ' + ev.result.inscriptionsFound + ' inscriptions found';
+            }
+            setTimeout(() => {
+              const addrInput = document.getElementById('addressFilter');
+              if (addrInput) addrInput.value = address;
+              fetchInscriptions();
+            }, 500);
+          } else if (ev.phase === 'error') {
+            if (bar) bar.style.background = 'var(--accent-red)';
+            if (status) status.textContent = 'Error: ' + (ev.error || 'unknown');
+          }
+        } catch {}
+      }
+    }
+  } catch (e) {
+    el.innerHTML = '<div class="glass" style="padding:12px;color:var(--accent-red)">Scan failed: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+// ── Apps tab ────────────────────────────────────────
+function renderAppsTab() {
+  let html = '<div style="margin-bottom:16px"><span style="font-size:15px;font-weight:600;color:var(--text-primary)">Apps</span>';
+  html += '<span style="font-size:11px;color:var(--text-muted);margin-left:10px">Apps running on your bridge</span></div>';
+
+  if (!appsData || appsData.length === 0) {
+    html += '<div class="glass" style="padding:30px;text-align:center"><div style="color:var(--text-dim)">No apps configured</div>';
+    html += '<div style="color:var(--text-dim);font-size:11px;margin-top:4px">Add an "apps" array to your bridge config</div></div>';
+    return html;
+  }
+
+  html += '<div class="apps-grid">';
+  for (const app of appsData) {
+    html += '<div class="app-card glass">';
+
+    // Header: health dot + name + SSL badge
+    const hStatus = app.health?.status || 'unknown';
+    html += '<div class="app-card-header">';
+    html += '<span class="app-health-dot ' + hStatus + '"></span>';
+    html += '<span class="app-name"><a href="' + escapeHtml(app.url) + '" target="_blank">' + escapeHtml(app.name) + '</a></span>';
+    if (app.ssl) {
+      let sslClass = 'unknown', sslLabel = 'SSL ?';
+      if (app.ssl.valid && app.ssl.daysRemaining > 30) { sslClass = 'valid'; sslLabel = 'SSL OK'; }
+      else if (app.ssl.valid && app.ssl.daysRemaining <= 30) { sslClass = 'expiring'; sslLabel = app.ssl.daysRemaining + 'd left'; }
+      else if (app.ssl.valid === false) { sslClass = 'expired'; sslLabel = 'SSL expired'; }
+      html += '<span class="ssl-badge ' + sslClass + '">' + sslLabel + '</span>';
+    }
+    html += '</div>';
+
+    // URLs
+    html += '<div class="app-urls">' + escapeHtml(app.url);
+    if (app.bridgeDomain) html += '<br>bridge: ' + escapeHtml(app.bridgeDomain);
+    html += '</div>';
+
+    // Status + response time
+    if (app.health) {
+      const h = app.health;
+      const ms = h.responseTimeMs || 0;
+      const msColor = ms < 500 ? 'green' : ms < 2000 ? 'yellow' : 'red';
+      const msWidth = Math.max(8, Math.min(100, (ms / 3000) * 100));
+      html += '<div class="app-stat-row">';
+      html += '<span class="label">Status</span>';
+      html += '<span class="value">' + (h.statusCode || '-') + '</span>';
+      html += '<span class="label" style="margin-left:auto">Latency</span>';
+      html += '<span class="value">' + ms + 'ms</span>';
+      html += '</div>';
+      html += '<div class="app-bar-bg"><div class="app-bar-fill ' + msColor + '" style="width:' + msWidth + '%"></div></div>';
+
+      // Uptime
+      const pct = h.uptimePercent != null ? h.uptimePercent : 0;
+      const upColor = pct >= 99 ? 'green' : pct >= 90 ? 'yellow' : 'red';
+      html += '<div class="app-stat-row">';
+      html += '<span class="label">Uptime</span>';
+      html += '<span class="value">' + pct.toFixed(1) + '%</span>';
+      html += '<span style="font-size:10px;color:var(--text-dim);margin-left:auto">' + (h.checksUp || 0) + '/' + (h.checksTotal || 0) + ' checks</span>';
+      html += '</div>';
+      html += '<div class="app-bar-bg"><div class="app-bar-fill ' + upColor + '" style="width:' + pct + '%"></div></div>';
+    }
+
+    // SSL details
+    if (app.ssl && app.ssl.valid != null) {
+      html += '<div class="app-stat-row">';
+      html += '<span class="label">SSL</span>';
+      html += '<span class="value" style="font-size:11px">' + escapeHtml(app.ssl.issuer || '-') + '</span>';
+      if (app.ssl.expiresAt) html += '<span style="font-size:10px;color:var(--text-dim);margin-left:auto">exp ' + new Date(app.ssl.expiresAt).toLocaleDateString() + '</span>';
+      html += '</div>';
+    }
+
+    // Bridge usage
+    if (app.usage) {
+      html += '<div class="app-stat-row">';
+      html += '<span class="label">Requests</span>';
+      html += '<span class="value">' + (app.usage.totalRequests || 0).toLocaleString() + '</span>';
+      if (app.usage.lastSeen) html += '<span style="font-size:10px;color:var(--text-dim);margin-left:auto">last ' + new Date(app.usage.lastSeen).toLocaleTimeString() + '</span>';
+      html += '</div>';
+
+      // Endpoint breakdown (top 8)
+      const eps = app.usage.endpoints ? Object.entries(app.usage.endpoints).sort((a, b) => b[1] - a[1]).slice(0, 8) : [];
+      if (eps.length > 0) {
+        html += '<div class="ep-list">';
+        for (const [path, count] of eps) {
+          html += '<div class="ep-row"><span class="ep-path">' + escapeHtml(path) + '</span><span class="ep-count">' + count + '</span></div>';
+        }
+        html += '</div>';
+      }
+    }
+
+    // Last error
+    if (app.health?.lastError) {
+      html += '<div class="app-error-box">' + escapeHtml(typeof app.health.lastError === 'object' ? app.health.lastError.message : app.health.lastError) + '</div>';
+    }
+
+    // Last check timestamp
+    if (app.health?.lastCheck) {
+      html += '<div style="font-size:10px;color:var(--text-dim);margin-top:4px">checked ' + new Date(app.health.lastCheck).toLocaleTimeString() + '</div>';
+    }
+
+    html += '</div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+async function fetchAppsData() {
+  const b = bridgeData.get(selectedBridge);
+  if (!b) return;
+  try {
+    const r = await fetch(b._url + '/apps', { signal: AbortSignal.timeout(10000) });
+    if (!r.ok) { appsData = []; if (activeTab === 'apps') { const el = document.getElementById('tabContent'); if (el) el.innerHTML = renderAppsTab(); } return; }
+    const data = await r.json();
+    if (Array.isArray(data)) appsData = data;
+    else if (data.apps) appsData = data.apps;
+    else appsData = [];
+    if (activeTab === 'apps') {
+      const el = document.getElementById('tabContent');
+      if (el) el.innerHTML = renderAppsTab();
+    }
+  } catch (e) {
+    appsData = [];
+    if (activeTab === 'apps') {
+      const el = document.getElementById('tabContent');
+      if (el) el.innerHTML = '<div class="glass" style="padding:20px;color:var(--accent-red)">' + escapeHtml(e.message) + '</div>';
+    }
+  }
+}
 
 // ── Log viewer ─────────────────────────────────────
 function openLogViewer(bridgeUrl) {

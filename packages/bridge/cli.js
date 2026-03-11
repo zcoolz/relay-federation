@@ -29,6 +29,9 @@ switch (command) {
   case 'deregister':
     await cmdDeregister()
     break
+  case 'secret':
+    await cmdSecret()
+    break
   default:
     console.log('relay-bridge — Federated SPV relay mesh bridge\n')
     console.log('Commands:')
@@ -38,6 +41,7 @@ switch (command) {
     console.log('  status      Show running bridge status')
     console.log('  fund        Import a funding transaction (raw hex)')
     console.log('  deregister  Deregister this bridge from the mesh')
+    console.log('  secret      Show your operator secret for dashboard login')
     console.log('')
     console.log('Usage: relay-bridge <command> [options]')
     process.exit(command ? 1 : 0)
@@ -58,12 +62,36 @@ async function cmdInit () {
   console.log(`  Config:  ${dir}/config.json`)
   console.log(`  Pubkey:  ${config.pubkeyHex}`)
   console.log(`  Address: ${config.address}`)
+  console.log(`  Secret:  ${config.statusSecret}`)
+  console.log('')
+  console.log('  Save your operator secret! You need it to log into the dashboard.')
   console.log('')
   console.log('Next steps:')
   console.log(`  1. Edit config.json — set your WSS endpoint`)
   console.log(`  2. Fund your bridge: send BSV to ${config.address}`)
   console.log('  3. Import the funding tx: relay-bridge fund <rawTxHex>')
   console.log('  4. Run: relay-bridge register')
+}
+
+async function cmdSecret () {
+  const dir = defaultConfigDir()
+
+  if (!(await configExists(dir))) {
+    console.log('No config found. Run: relay-bridge init')
+    process.exit(1)
+  }
+
+  const config = await loadConfig(dir)
+
+  if (!config.statusSecret) {
+    console.log('No operator secret found in config.')
+    console.log('Add "statusSecret" to your config.json or re-initialize.')
+    process.exit(1)
+  }
+
+  console.log(`Operator secret: ${config.statusSecret}`)
+  console.log('')
+  console.log('Use this to log into the dashboard operator panel.')
 }
 
 async function cmdRegister () {
@@ -116,7 +144,8 @@ async function cmdStart () {
   }
 
   const config = await loadConfig(dir)
-  const peerArg = process.argv[3] // optional: ws://host:port
+  const rawPeerArg = process.argv[3] // optional: ws://host:port
+  const peerArg = (rawPeerArg && !rawPeerArg.startsWith('-')) ? rawPeerArg : null
 
   // ── 1. Open persistent store ──────────────────────────────
   const { PersistentStore } = await import('./lib/persistent-store.js')
@@ -163,6 +192,7 @@ async function cmdStart () {
   // Wire peer health tracking
   peerManager.on('peer:connect', ({ pubkeyHex }) => {
     peerHealth.recordSeen(pubkeyHex)
+    scorer.setStakeAge(pubkeyHex, 7)
   })
 
   peerManager.on('peer:disconnect', ({ pubkeyHex }) => {
@@ -299,6 +329,8 @@ async function cmdStart () {
           meshId: entry.mesh_id
         })
         console.log(`Beacon: new registration detected — ${pubHex.slice(0, 16)}... @ ${entry.endpoint}`)
+        const stakeAgeDays = Math.max(0, (Date.now() / 1000 - entry.timestamp) / 86400)
+        scorer.setStakeAge(pubHex, stakeAgeDays)
       } else if (entry.action === 'deregister') {
         const pubHex = Buffer.from(entry.pubkey).toString('hex')
         registeredPubkeys.delete(pubHex)
@@ -308,6 +340,7 @@ async function cmdStart () {
       // Skip unparseable beacon txs
     }
   })
+
 
   // ── Outbound handshake helper ──────────────────────────────
   function performOutboundHandshake (conn) {
@@ -397,6 +430,25 @@ async function cmdStart () {
 
   txRelay.on('tx:new', async ({ txid, rawHex }) => {
     try { await store.putTx(txid, rawHex) } catch {}
+    // Index inscriptions
+    try {
+      const { parseTx } = await import('./lib/output-parser.js')
+      const parsed = parseTx(rawHex)
+      for (const output of parsed.outputs) {
+        if (output.type === 'ordinal' && output.parsed) {
+          await store.putInscription({
+            txid,
+            vout: output.vout,
+            contentType: output.parsed.contentType || null,
+            contentSize: output.parsed.content ? output.parsed.content.length / 2 : 0,
+            isBsv20: output.parsed.isBsv20 || false,
+            bsv20: output.parsed.bsv20 || null,
+            timestamp: Date.now(),
+            address: output.hash160 || null
+          })
+        }
+      }
+    } catch {}
   })
 
   // ── 6b. BSV P2P header sync — connect to BSV nodes ──────
@@ -431,6 +483,23 @@ async function cmdStart () {
     // Don't crash — just log
     if (err.code !== 'ECONNREFUSED' && err.code !== 'ETIMEDOUT') {
       console.log(`BSV P2P: ${err.message}`)
+    }
+  })
+
+  // Auto-detect incoming payments: request txs announced via INV
+  bsvNode.on('tx:inv', ({ txids }) => {
+    for (const txid of txids) {
+      if (txRelay.seen.has(txid)) continue
+      bsvNode.getTx(txid, 10000).then(({ txid: id, rawHex }) => {
+        txRelay.broadcastTx(id, rawHex)
+      }).catch(() => {}) // ignore fetch failures
+    }
+  })
+
+  // Feed raw txs from BSV P2P into the mesh relay + address watcher
+  bsvNode.on('tx', ({ txid, rawHex }) => {
+    if (!txRelay.seen.has(txid)) {
+      txRelay.broadcastTx(txid, rawHex)
     }
   })
 
@@ -563,9 +632,11 @@ async function cmdStart () {
     bsvNodeClient: bsvNode,
     store,
     performOutboundHandshake,
-    registeredPubkeys
+    registeredPubkeys,
+    gossipManager
   })
   await statusServer.start()
+  statusServer.startAppMonitoring()
   console.log(`  Status: http://127.0.0.1:${statusPort}/status`)
 
   // ── 9. Log events (dual: console + status server ring buffer) ──
@@ -588,13 +659,13 @@ async function cmdStart () {
   })
 
   txRelay.on('tx:new', ({ txid }) => {
-    const msg = `New tx: ${txid.slice(0, 16)}...`
+    const msg = `New tx: ${txid}`
     console.log(msg)
     statusServer.addLog(msg)
   })
 
   watcher.on('utxo:received', ({ txid, vout, satoshis }) => {
-    const msg = `UTXO received: ${txid.slice(0, 16)}...:${vout} (${satoshis} sat)`
+    const msg = `UTXO received: ${txid}:${vout} (${satoshis} sat)`
     console.log(msg)
     statusServer.addLog(msg)
   })
@@ -744,7 +815,8 @@ async function cmdFund () {
   const { PersistentStore } = await import('./lib/persistent-store.js')
   const { runFund } = await import('./lib/actions.js')
 
-  const store = new PersistentStore(dir)
+  const dataDir = config.dataDir || join(dir, 'data')
+  const store = new PersistentStore(dataDir)
   await store.open()
 
   try {

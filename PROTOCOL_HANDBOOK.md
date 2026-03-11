@@ -1,0 +1,216 @@
+# Protocol Support Handbook
+
+The relay federation bridge parses BSV transactions beyond simple P2PKH. Every output is typed, protocol-detected, and returned as structured data via the API and dashboard.
+
+---
+
+## Quick Reference
+
+### Lookup a Transaction
+```bash
+curl http://144.202.48.217:9333/tx/d312e66b15eed296497c3d3855df6e07e0380feca46d3cf68da3ba5d58804f00
+```
+
+Returns fully parsed JSON with `type`, `protocol`, `parsed` for each output.
+
+### Get Mempool with Protocol Data
+```bash
+curl http://144.202.48.217:9333/mempool
+```
+
+Each output includes `type`, `protocol`, `parsed` fields alongside `vout`, `satoshis`, `hash160`.
+
+---
+
+## Supported Output Types
+
+| Type | Detection | Fields |
+|---|---|---|
+| `p2pkh` | `76a914{20 bytes}88ac` | `hash160` |
+| `op_return` | `6a...` or `006a...` | `data[]`, `protocol`, `parsed` |
+| `ordinal` | Contains `0063036f7264` | `contentType`, `content`, `isBsv20`, `bsv20` |
+| `p2sh` | `a914{20 bytes}87` | `scriptHash` |
+| `multisig` | Ends with `ae` | `m`, `n`, `pubkeys[]` |
+| `unknown` | Anything else | (none) |
+
+## Supported Protocols (inside OP_RETURN)
+
+| Protocol | Prefix Address | Parsed Fields |
+|---|---|---|
+| `b` (B://) | `19HxigV4QyBv3tHpQVcUEQyq1pzZVdoAut` | `data`, `mimeType`, `encoding`, `filename` |
+| `bcat` | `15DHFxWZJT58f9nhyGnsRBqrgwK4W6h4Up` | `info`, `mimeType`, `charset`, `filename`, `flag`, `chunkTxids[]` |
+| `bcat-part` | `1ChDHzdd1H4wSjgGMHyndZm6qxEDGjqpJL` | `data` |
+| `map` (MAP) | `1PuQa7K62MiKCtssSLKy1kh56WWU7MtUR5` | `action`, `pairs: { key: value }` |
+| `metanet` | Magic bytes `6d657461` ("meta") | `nodeAddress`, `parentTxid` |
+| `bsv-20` | Ordinal with `application/bsv-20` | `bsv20: { p, op, tick/id, amt, ... }` |
+
+---
+
+## API Response Shape
+
+### `GET /tx/:txid`
+
+```json
+{
+  "txid": "d312e66b...",
+  "source": "woc",
+  "size": 285,
+  "inputs": [
+    { "prevTxid": "abc123...", "prevVout": 0 }
+  ],
+  "outputs": [
+    {
+      "vout": 0,
+      "satoshis": 0,
+      "scriptHex": "6a...",
+      "hash160": null,
+      "isP2PKH": false,
+      "type": "op_return",
+      "data": ["19486x...", "48656c6c6f", "746578742f706c61696e"],
+      "protocol": "b",
+      "parsed": {
+        "data": "48656c6c6f",
+        "mimeType": "text/plain",
+        "encoding": null,
+        "filename": null
+      }
+    },
+    {
+      "vout": 1,
+      "satoshis": 546,
+      "scriptHex": "76a914...",
+      "hash160": "de37babdd5a78f707274f45434b5a3e86eb652ae",
+      "isP2PKH": true,
+      "type": "p2pkh",
+      "data": null,
+      "protocol": null,
+      "parsed": null
+    }
+  ]
+}
+```
+
+**Source values:** `mempool` (bridge mempool), `p2p` (fetched from BSV network), `woc` (WhatsonChain API fallback)
+
+### `GET /mempool`
+
+Same output shape per tx. Protocol fields included on every output.
+
+---
+
+## Data Flow
+
+```
+Tx arrives (P2P / broadcast / WoC lookup)
+  │
+  ├─ parseTx(rawHex)
+  │    └─ for each output: parseOutputScript(scriptHex)
+  │         ├─ P2PKH? → { type: 'p2pkh', hash160 }
+  │         ├─ OP_RETURN? → parseOpReturn() → detectProtocol()
+  │         │    ├─ B://? → parseBProtocol()
+  │         │    ├─ BCAT? → parseBCATLinker()
+  │         │    ├─ BCAT-part? → parseBCATPart()
+  │         │    ├─ MAP? → parseMAP()
+  │         │    └─ MetaNet? → parseMetaNet()
+  │         ├─ Ordinal? → parseOrdinal()
+  │         │    └─ BSV-20? → parse JSON body
+  │         ├─ P2SH? → parseP2SH()
+  │         ├─ Multisig? → parseMultisig()
+  │         └─ Unknown
+  │
+  └─ JSON response with all fields
+```
+
+---
+
+## Files
+
+| File | Role |
+|---|---|
+| `packages/bridge/lib/output-parser.js` | All parsing logic. Exports: `parseTx`, `parseOutputScript`, `parseOpReturn`, `parseOrdinal`, `pubkeyToHash160`, `addressToHash160`, `checkTxForWatched` |
+| `packages/bridge/test/output-parser.test.js` | 268 tests (23 protocol-specific) |
+| `packages/bridge/lib/status-server.js` | Serves `/tx/:txid` and `/mempool` endpoints |
+| `dashboard/index.html` | Protocol badges, Tx Explorer, parsed data rendering |
+
+---
+
+## Backward Compatibility
+
+- `isP2PKH` and `hash160` still returned on every output (unchanged)
+- `checkTxForWatched()` still works exactly as before (only checks P2PKH)
+- `address-watcher.js` needs zero changes
+- New fields (`type`, `data`, `protocol`, `parsed`) are purely additive
+
+---
+
+## Dashboard Features
+
+### Protocol Badges
+Color-coded badges on every output:
+- **P2PKH** (blue) — standard payment
+- **OP_RETURN** (purple) — data carrier
+- **B://** (green) — on-chain file
+- **BCAT** (teal) — chunked file
+- **MAP** (orange) — metadata
+- **METANET** (cyan) — tree data
+- **BSV-20** (gold) — fungible token
+- **ORDINAL** (red) — inscription
+- **P2SH** (gray) — legacy script hash
+- **MULTISIG** (gray) — multi-signature
+
+### Transaction Explorer
+In the side panel when a bridge is selected:
+1. Paste any txid into the input
+2. Press Enter or click Lookup
+3. Bridge fetches the tx (mempool → P2P → WoC) and returns parsed data
+4. Every output displayed with protocol badge + structured parsed fields
+
+### Clickable Mempool Txids
+Click any txid in the mempool list → auto-fills the Tx Explorer and triggers lookup.
+
+---
+
+## Adding a New Protocol
+
+1. **Add prefix constant** in `output-parser.js` (e.g. `const NEW_PREFIX = '1NewAddress...'`)
+2. **Add parser function** (e.g. `function parseNewProtocol(pushes) { ... }`)
+3. **Add detection** in `detectProtocol()` — check `firstPush === NEW_PREFIX`
+4. **Add tests** in `output-parser.test.js` — construct a script hex, verify parsing
+5. **Add CSS badge** in `dashboard/index.html` (`.proto-badge.new-protocol`)
+6. **Add rendering** in `renderParsedData()` — display the parsed fields
+7. Run `npm test --workspace=packages/bridge` — all tests must pass
+
+---
+
+## Known Protocol Byte Patterns
+
+```
+P2PKH:           76a914{20 bytes}88ac
+OP_RETURN:       6a{pushdata...}
+OP_FALSE RETURN: 006a{pushdata...}
+P2SH:            a914{20 bytes}87
+Multisig:        5{m}{pubkeys}5{n}ae
+Ordinal:         ...0063036f7264...68  (OP_FALSE OP_IF PUSH3"ord" ... OP_ENDIF)
+MetaNet magic:   6d657461 ("meta" as 4 hex bytes)
+```
+
+## OP_RETURN Push Encoding
+
+| Byte | Meaning |
+|---|---|
+| `0x00` | OP_0 — pushes empty data |
+| `0x01`–`0x4b` | Direct push — next N bytes are data |
+| `0x4c` | OP_PUSHDATA1 — next 1 byte is length |
+| `0x4d` | OP_PUSHDATA2 — next 2 bytes (LE) is length |
+| `0x4e` | OP_PUSHDATA4 — next 4 bytes (LE) is length |
+| `0x51`–`0x60` | OP_1 through OP_16 — pushes number |
+
+---
+
+## Test Txids (for manual verification)
+
+These are real BSV transactions you can test with:
+
+- **Weather oracle (OP_RETURN):** `d312e66b15eed296497c3d3855df6e07e0380feca46d3cf68da3ba5d58804f00`
+- **BSV-20 ordinal transfer:** `2759a10d64f04e43691c6e458f2489bf58056c5e29cac5886abbbf53eb8e44a6`
+- **MetaNet node:** `ded39e1941c80aba4854ed6405649a65008ce294ac7ecbbd099f3244ef79d776`

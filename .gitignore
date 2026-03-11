@@ -6,3 +6,4 @@ dist/
 Thumbs.db
 coverage/
 .nyc_output/
+*.tgz

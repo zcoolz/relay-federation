@@ -35,6 +35,8 @@ export class PersistentStore extends EventEmitter {
     this._meta = null
     this._watched = null
     this._hashIndex = null
+    this._inscriptions = null
+    this._inscriptionIdx = null
   }
 
   /** Open the database and create sublevels. */
@@ -47,6 +49,8 @@ export class PersistentStore extends EventEmitter {
     this._meta = this.db.sublevel('meta', { valueEncoding: 'json' })
     this._watched = this.db.sublevel('watched', { valueEncoding: 'json' })
     this._hashIndex = this.db.sublevel('hashIndex', { valueEncoding: 'json' })
+    this._inscriptions = this.db.sublevel('inscriptions', { valueEncoding: 'json' })
+    this._inscriptionIdx = this.db.sublevel('inscIdx', { valueEncoding: 'json' })
     this.emit('open')
   }
 
@@ -278,6 +282,117 @@ export class PersistentStore extends EventEmitter {
   async getMeta (key, defaultValue = null) {
     const val = await this._meta.get(key)
     return val !== undefined ? val : defaultValue
+  }
+  // ── Inscriptions ─────────────────────────────────────────
+
+  /**
+   * Store an inscription record with secondary indexes.
+   * @param {{ txid: string, vout: number, contentType: string, contentSize: number, isBsv20: boolean, bsv20: object|null, timestamp: number, address: string|null }} record
+   */
+  async putInscription (record) {
+    const key = `${record.txid}:${record.vout}`
+    const suffix = `${record.txid}:${record.vout}`
+
+    // Purge ALL stale secondary index entries pointing to this key
+    try {
+      const delBatch = []
+      for await (const [idxKey, val] of this._inscriptionIdx.iterator()) {
+        if (val === key && idxKey.endsWith(suffix)) delBatch.push({ type: 'del', key: idxKey })
+      }
+      if (delBatch.length) await this._inscriptionIdx.batch(delBatch)
+    } catch {}
+
+    await this._inscriptions.put(key, record)
+
+    const ts = String(record.timestamp).padStart(15, '0')
+    const batch = [{ type: 'put', key: `time:${ts}:${suffix}`, value: key }]
+    if (record.contentType) {
+      batch.push({ type: 'put', key: `mime:${record.contentType}:${ts}:${suffix}`, value: key })
+    }
+    if (record.address) {
+      batch.push({ type: 'put', key: `addr:${record.address}:${ts}:${suffix}`, value: key })
+    }
+    await this._inscriptionIdx.batch(batch)
+  }
+
+  /**
+   * Query inscriptions with optional filters.
+   * @param {{ mime?: string, address?: string, limit?: number }} opts
+   * @returns {Promise<Array>}
+   */
+  async getInscriptions ({ mime, address, limit = 50 } = {}) {
+    const results = []
+    let prefix
+    if (address) {
+      prefix = `addr:${address}:`
+    } else if (mime) {
+      prefix = `mime:${mime}:`
+    } else {
+      prefix = 'time:'
+    }
+
+    for await (const [, primaryKey] of this._inscriptionIdx.iterator({
+      gte: prefix, lt: prefix + '~', reverse: true, limit
+    })) {
+      try {
+        const record = await this._inscriptions.get(primaryKey)
+        if (record) {
+          // Strip content from list results (can be 400KB+ per image)
+          const { content, ...meta } = record
+          results.push(meta)
+        }
+      } catch {}
+    }
+    return results
+  }
+
+  /**
+   * Rebuild inscription secondary indexes from primary records.
+   * Clears all index entries and re-creates from source of truth.
+   * @returns {Promise<number>} count of inscriptions re-indexed
+   */
+  async rebuildInscriptionIndex () {
+    // Clear entire index
+    for await (const [key] of this._inscriptionIdx.iterator()) {
+      await this._inscriptionIdx.del(key)
+    }
+    // Re-create from primary records
+    let count = 0
+    for await (const [, record] of this._inscriptions.iterator()) {
+      const ts = String(record.timestamp).padStart(15, '0')
+      const suffix = `${record.txid}:${record.vout}`
+      const key = suffix
+      const batch = [{ type: 'put', key: `time:${ts}:${suffix}`, value: key }]
+      if (record.contentType) batch.push({ type: 'put', key: `mime:${record.contentType}:${ts}:${suffix}`, value: key })
+      if (record.address) batch.push({ type: 'put', key: `addr:${record.address}:${ts}:${suffix}`, value: key })
+      await this._inscriptionIdx.batch(batch)
+      count++
+    }
+    return count
+  }
+
+  /**
+   * Get a single inscription record (with content) by txid:vout.
+   * @param {string} txid
+   * @param {number} vout
+   * @returns {Promise<object|null>}
+   */
+  async getInscription (txid, vout) {
+    try {
+      return await this._inscriptions.get(`${txid}:${vout}`)
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Get total inscription count.
+   * @returns {Promise<number>}
+   */
+  async getInscriptionCount () {
+    let count = 0
+    for await (const _ of this._inscriptions.keys()) count++
+    return count
   }
 }
 

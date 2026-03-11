@@ -1,5 +1,11 @@
 import { createServer } from 'node:http'
 import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import https from 'node:https'
+import { parseTx } from './output-parser.js'
+import { scanAddress } from './address-scanner.js'
 
 /**
  * StatusServer — localhost-only HTTP server exposing bridge status.
@@ -12,112 +18,8 @@ import { createHash } from 'node:crypto'
  *   GET /status — JSON object with bridge state
  */
 
-const DASHBOARD_HTML = `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Relay Bridge Dashboard</title>
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace; padding: 24px; }
-  h1 { color: #58a6ff; font-size: 20px; margin-bottom: 20px; }
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; max-width: 800px; }
-  .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
-  .card h2 { color: #8b949e; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; }
-  .card.full { grid-column: 1 / -1; }
-  .row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 14px; }
-  .row .label { color: #8b949e; }
-  .row .value { color: #c9d1d9; font-family: monospace; }
-  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
-  .dot.green { background: #3fb950; }
-  .dot.red { background: #f85149; }
-  .dot.yellow { background: #d29922; }
-  .peer-row { padding: 6px 0; font-size: 13px; border-bottom: 1px solid #21262d; }
-  .peer-row:last-child { border-bottom: none; }
-  .mono { font-family: monospace; font-size: 13px; }
-  .big { font-size: 28px; font-weight: bold; color: #58a6ff; }
-  .updated { color: #484f58; font-size: 11px; margin-top: 16px; text-align: right; }
-  .error { color: #f85149; padding: 20px; text-align: center; }
-</style>
-</head>
-<body>
-<h1>Relay Bridge Dashboard</h1>
-<div id="app" class="error">Loading...</div>
-<script>
-function fmt(s) {
-  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600),
-        m = Math.floor((s % 3600) / 60), sec = s % 60;
-  if (d > 0) return d + 'd ' + h + 'h ' + m + 'm';
-  if (h > 0) return h + 'h ' + m + 'm ' + sec + 's';
-  if (m > 0) return m + 'm ' + sec + 's';
-  return sec + 's';
-}
-function render(s) {
-  const pk = s.bridge.pubkeyHex || '(none)';
-  let peers = '';
-  if (s.peers.list.length === 0) {
-    peers = '<div style="color:#484f58;padding:8px 0">No peers connected</div>';
-  } else {
-    for (const p of s.peers.list) {
-      const dot = p.connected ? 'green' : 'red';
-      const tag = p.connected ? 'connected' : 'disconnected';
-      const score = p.score !== undefined ? ' score:' + p.score : '';
-      const health = p.health && p.health !== 'online' ? ' [' + p.health + ']' : '';
-      peers += '<div class="peer-row"><span class="dot ' + dot + '"></span>'
-        + '<span class="mono">' + p.pubkeyHex.slice(0, 16) + '...</span> '
-        + (p.endpoint || '') + ' <span style="color:#484f58">(' + tag + score + health + ')</span></div>';
-    }
-  }
-  const dot = s.peers.connected > 0 ? 'green' : (s.peers.max > 0 ? 'yellow' : 'red');
-  document.getElementById('app').innerHTML =
-    '<div class="grid">' +
-      '<div class="card">' +
-        '<h2>Bridge</h2>' +
-        '<div class="row"><span class="label">Pubkey</span><span class="value mono">' + pk.slice(0, 20) + '...</span></div>' +
-        '<div class="row"><span class="label">Endpoint</span><span class="value">' + (s.bridge.endpoint || '(not set)') + '</span></div>' +
-        '<div class="row"><span class="label">Mesh</span><span class="value">' + (s.bridge.meshId || '(none)') + '</span></div>' +
-        '<div class="row"><span class="label">Uptime</span><span class="value">' + fmt(s.bridge.uptimeSeconds) + '</span></div>' +
-      '</div>' +
-      '<div class="card">' +
-        '<h2>Network</h2>' +
-        '<div style="text-align:center;padding:8px 0"><span class="dot ' + dot + '"></span><span class="big">' + s.peers.connected + '</span><span style="color:#484f58"> / ' + s.peers.max + ' peers</span></div>' +
-        '<div class="row"><span class="label">Headers</span><span class="value">' + s.headers.count + ' stored</span></div>' +
-        '<div class="row"><span class="label">Best Height</span><span class="value">' + s.headers.bestHeight + '</span></div>' +
-        '<div class="row"><span class="label">Mempool</span><span class="value">' + s.txs.mempool + ' txs</span></div>' +
-        '<div class="row"><span class="label">Seen</span><span class="value">' + s.txs.seen + ' txs</span></div>' +
-      '</div>' +
-      '<div class="card">' +
-        '<h2>BSV Node</h2>' +
-        '<div class="row"><span class="label">Status</span><span class="value"><span class="dot ' + (s.bsvNode.connected ? 'green' : 'red') + '"></span>' + (s.bsvNode.connected ? 'Connected' : 'Disconnected') + '</span></div>' +
-        '<div class="row"><span class="label">Peers</span><span class="value">' + (s.bsvNode.peers || 0) + ' connected</span></div>' +
-        '<div class="row"><span class="label">Height</span><span class="value">' + (s.bsvNode.height || '-') + '</span></div>' +
-      '</div>' +
-      (s.wallet ? '<div class="card">' +
-        '<h2>Wallet</h2>' +
-        '<div style="text-align:center;padding:8px 0"><span class="big">' + (s.wallet.balanceSats !== null ? s.wallet.balanceSats.toLocaleString() : '-') + '</span><span style="color:#484f58"> sats</span></div>' +
-      '</div>' : '') +
-      '<div class="card full">' +
-        '<h2>Peers (' + s.peers.connected + '/' + s.peers.max + ')</h2>' +
-        peers +
-      '</div>' +
-    '</div>' +
-    '<div class="updated">Last updated: ' + new Date().toLocaleTimeString() + ' (refreshes every 5s)</div>';
-}
-async function poll() {
-  try {
-    const r = await fetch('/status');
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    render(await r.json());
-  } catch (e) {
-    document.getElementById('app').innerHTML = '<div class="error">Failed to fetch status: ' + e.message + '</div>';
-  }
-}
-poll();
-setInterval(poll, 5000);
-</script>
-</body>
-</html>`
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const DASHBOARD_HTML = readFileSync(join(__dirname, '..', 'dashboard', 'index.html'), 'utf8')
 export class StatusServer {
   /**
    * @param {object} opts
@@ -141,6 +43,7 @@ export class StatusServer {
     this._store = opts.store || null
     this._performOutboundHandshake = opts.performOutboundHandshake || null
     this._registeredPubkeys = opts.registeredPubkeys || null
+    this._gossipManager = opts.gossipManager || null
     this._startedAt = Date.now()
     this._server = null
 
@@ -152,6 +55,24 @@ export class StatusServer {
     this._logs = []
     this._logListeners = new Set()
     this._maxLogs = 500
+
+    // App monitoring state
+    this._appChecks = new Map()
+    this._requestTracker = new Map()
+    this._appSSLCache = new Map()
+    this._appBridgeDomains = new Set()
+    this._appCheckInterval = null
+    this._addressCache = new Map()
+    if (this._config.apps) {
+      for (const app of this._config.apps) {
+        this._appChecks.set(app.url, { checks: [], lastError: null })
+        if (app.bridgeDomain) {
+          this._appBridgeDomains.add(app.bridgeDomain)
+          this._requestTracker.set(app.bridgeDomain, { total: 0, endpoints: {}, lastSeen: null })
+        }
+        try { this._appBridgeDomains.add(new URL(app.url).hostname) } catch {}
+      }
+    }
   }
 
   /**
@@ -192,7 +113,6 @@ export class StatusServer {
     const status = {
       bridge: {
         pubkeyHex: this._config.pubkeyHex || null,
-        endpoint: this._config.endpoint || null,
         meshId: this._config.meshId || null,
         uptimeSeconds: Math.floor((Date.now() - this._startedAt) / 1000)
       },
@@ -220,7 +140,14 @@ export class StatusServer {
     // Operator-only fields
     if (authenticated) {
       status.operator = true
-      status.bridge.address = this._config.address || null
+      status.bridge.endpoint = this._config.endpoint || null
+      status.bridge.domains = this._config.domains || []
+      try {
+        const { PrivateKey } = await import('@bsv/sdk')
+        status.bridge.address = PrivateKey.fromWif(this._config.wif).toPublicKey().toAddress()
+      } catch {
+        status.bridge.address = this._config.address || null
+      }
       status.wallet = { balanceSats: null, utxoCount: 0 }
       if (this._store) {
         try { status.wallet.balanceSats = await this._store.getBalance() } catch {}
@@ -313,6 +240,83 @@ export class StatusServer {
   }
 
   /**
+   * Check SSL certificate for a hostname.
+   */
+  _checkSSL (hostname) {
+    return new Promise((resolve) => {
+      const req = https.request({ hostname, port: 443, method: 'HEAD', rejectUnauthorized: false, timeout: 5000 }, (res) => {
+        const cert = res.socket.getPeerCertificate()
+        if (!cert || !cert.valid_to) { resolve(null); req.destroy(); return }
+        resolve({
+          valid: res.socket.authorized,
+          issuer: cert.issuer?.O || cert.issuer?.CN || 'Unknown',
+          expiresAt: new Date(cert.valid_to).toISOString(),
+          daysRemaining: Math.floor((new Date(cert.valid_to) - Date.now()) / 86400000)
+        })
+        req.destroy()
+      })
+      req.on('error', () => resolve(null))
+      req.setTimeout(5000, () => { req.destroy(); resolve(null) })
+      req.end()
+    })
+  }
+
+  /**
+   * Health-check a single app.
+   */
+  async _checkApp (app) {
+    const entry = this._appChecks.get(app.url)
+    if (!entry) return
+    const start = Date.now()
+    let statusCode = 0
+    let up = false
+    let errorMsg = null
+    try {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 5000)
+      const res = await fetch(app.url, { method: 'HEAD', signal: controller.signal, redirect: 'follow' })
+      clearTimeout(timeout)
+      statusCode = res.status
+      up = statusCode >= 200 && statusCode < 400
+    } catch (err) {
+      errorMsg = err.message || 'Request failed'
+    }
+    const check = { timestamp: new Date().toISOString(), up, statusCode, responseTimeMs: Date.now() - start }
+    entry.checks.push(check)
+    if (entry.checks.length > 100) entry.checks.shift()
+    if (!up) entry.lastError = { message: errorMsg || `HTTP ${statusCode}`, timestamp: check.timestamp }
+  }
+
+  /**
+   * Run health checks on all configured apps.
+   */
+  async _checkAllApps () {
+    if (!this._config.apps) return
+    for (const app of this._config.apps) {
+      await this._checkApp(app)
+    }
+  }
+
+  /**
+   * Start background app health monitoring (30s interval).
+   */
+  startAppMonitoring () {
+    if (!this._config.apps || this._config.apps.length === 0) return
+    this._checkAllApps()
+    this._appCheckInterval = setInterval(() => this._checkAllApps(), 30000)
+  }
+
+  /**
+   * Stop background app health monitoring.
+   */
+  stopAppMonitoring () {
+    if (this._appCheckInterval) {
+      clearInterval(this._appCheckInterval)
+      this._appCheckInterval = null
+    }
+  }
+
+  /**
    * Start the HTTP server on localhost.
    * @returns {Promise<void>}
    */
@@ -351,11 +355,101 @@ export class StatusServer {
     const path = url.pathname
     const authenticated = this._checkAuth(req)
 
+    // Track requests from known app domains
+    const origin = req.headers.origin || req.headers.referer || ''
+    const host = (req.headers.host || '').split(':')[0]
+    let trackDomain = null
+    if (origin) { try { trackDomain = new URL(origin).hostname } catch {} }
+    if (!trackDomain && host && this._appBridgeDomains.has(host)) trackDomain = host
+    if (trackDomain && this._appBridgeDomains.has(trackDomain)) {
+      let bridgeDomain = trackDomain
+      if (this._config.apps) {
+        for (const app of this._config.apps) {
+          try { if (trackDomain === new URL(app.url).hostname) { bridgeDomain = app.bridgeDomain; break } } catch {}
+        }
+      }
+      const data = this._requestTracker.get(bridgeDomain)
+      if (data) {
+        data.total++
+        let ep = path
+        if (path.startsWith('/tx/')) ep = '/tx/:txid'
+        else if (path.startsWith('/inscription/')) ep = '/inscription/:content'
+        else if (path.startsWith('/jobs/')) ep = '/jobs/:id'
+        data.endpoints[ep] = (data.endpoints[ep] || 0) + 1
+        data.lastSeen = new Date().toISOString()
+      }
+    }
+
     // GET /status — public or operator status
     if (req.method === 'GET' && path === '/status') {
       const status = await this.getStatus({ authenticated })
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify(status))
+      return
+    }
+
+    // GET /mempool — public decoded mempool transactions
+    if (req.method === 'GET' && path === '/mempool') {
+      const txs = []
+      if (this._txRelay) {
+        for (const [txid, rawHex] of this._txRelay.mempool) {
+          try {
+            const parsed = parseTx(rawHex)
+            txs.push({
+              txid,
+              size: rawHex.length / 2,
+              inputs: parsed.inputs,
+              outputs: parsed.outputs.map(o => ({
+                vout: o.vout,
+                satoshis: o.satoshis,
+                isP2PKH: o.isP2PKH,
+                hash160: o.hash160,
+                type: o.type,
+                data: o.data,
+                protocol: o.protocol,
+                parsed: o.parsed
+              }))
+            })
+          } catch {
+            txs.push({ txid, size: rawHex.length / 2, inputs: [], outputs: [], error: 'decode failed' })
+          }
+        }
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ count: txs.length, txs }))
+      return
+    }
+
+    // GET /discover — public list of all known bridges in the mesh
+    if (req.method === 'GET' && path === '/discover') {
+      const bridges = []
+      // Add self
+      bridges.push({
+        pubkeyHex: this._config.pubkeyHex || null,
+        endpoint: this._config.endpoint || null,
+        meshId: this._config.meshId || null,
+        statusUrl: 'http://' + (req.headers.host || '127.0.0.1:' + this._port) + '/status'
+      })
+      // Add gossip directory (all known peers)
+      if (this._gossipManager) {
+        for (const peer of this._gossipManager.getDirectory()) {
+          // Derive statusUrl from ws endpoint: ws://host:8333 → http://host:9333
+          let statusUrl = null
+          try {
+            const u = new URL(peer.endpoint)
+            const statusPort = parseInt(u.port, 10) + 1000
+            statusUrl = 'http://' + u.hostname + ':' + statusPort + '/status'
+          } catch {}
+          bridges.push({
+            pubkeyHex: peer.pubkeyHex,
+            endpoint: peer.endpoint,
+            meshId: peer.meshId || null,
+            statusUrl
+          })
+        }
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' })
+      res.end(JSON.stringify({ count: bridges.length, bridges }))
       return
     }
 
@@ -381,6 +475,65 @@ export class StatusServer {
       const sent = this._txRelay ? this._txRelay.broadcastTx(txid, rawHex) : 0
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ txid, peers: sent }))
+      return
+    }
+
+    // GET /tx/:txid — fetch and parse transaction with full protocol support
+    if (req.method === 'GET' && path.startsWith('/tx/')) {
+      const txid = path.slice(4)
+      if (!txid || txid.length !== 64) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Invalid txid' }))
+        return
+      }
+
+      let rawHex = null
+      let source = null
+
+      // Check mempool first
+      if (this._txRelay && this._txRelay.mempool.has(txid)) {
+        rawHex = this._txRelay.mempool.get(txid)
+        source = 'mempool'
+      }
+
+      // Try P2P
+      if (!rawHex && this._bsvNodeClient) {
+        try {
+          const result = await this._bsvNodeClient.getTx(txid, 5000)
+          rawHex = result.rawHex
+          source = 'p2p'
+        } catch {}
+      }
+
+      // Fall back to WoC
+      if (!rawHex) {
+        try {
+          const resp = await fetch(`https://api.whatsonchain.com/v1/bsv/main/tx/${txid}/hex`)
+          if (!resp.ok) throw new Error(`WoC ${resp.status}`)
+          rawHex = await resp.text()
+          source = 'woc'
+        } catch (err) {
+          res.writeHead(404, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: `tx not found: ${err.message}` }))
+          return
+        }
+      }
+
+      // Parse with full protocol support
+      try {
+        const parsed = parseTx(rawHex)
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({
+          txid: parsed.txid,
+          source,
+          size: rawHex.length / 2,
+          inputs: parsed.inputs,
+          outputs: parsed.outputs
+        }))
+      } catch (err) {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ txid, source, size: rawHex.length / 2, error: 'parse failed: ' + err.message }))
+      }
       return
     }
 
@@ -480,6 +633,29 @@ export class StatusServer {
       return
     }
 
+    // POST /send — operator: send BSV from bridge wallet
+    if (req.method === 'POST' && path === '/send') {
+      if (!authenticated) {
+        res.writeHead(401, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Unauthorized. Provide statusSecret via ?auth= or Authorization header.' }))
+        return
+      }
+      const { runSend } = await import('./actions.js')
+      const body = await this._readBody(req)
+      if (!body.toAddress || !body.amount) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'toAddress and amount required' }))
+        return
+      }
+      const { jobId, log } = this._createJob()
+      res.writeHead(202, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ jobId, stream: `/jobs/${jobId}` }))
+      runSend({ config: this._config, store: this._store, toAddress: body.toAddress, amount: Number(body.amount), log }).catch(err => {
+        log('error', err.message)
+      })
+      return
+    }
+
     // GET /jobs/:id — SSE stream for job progress
     if (req.method === 'GET' && path.startsWith('/jobs/')) {
       const jobId = path.slice(6)
@@ -537,6 +713,201 @@ export class StatusServer {
       return
     }
 
+    // GET /inscriptions — query indexed inscriptions
+    if (req.method === 'GET' && path === '/inscriptions') {
+      if (!this._store) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Store not available' }))
+        return
+      }
+      const mime = url.searchParams.get('mime')
+      const address = url.searchParams.get('address')
+      const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10) || 50, 200)
+      try {
+        const inscriptions = await this._store.getInscriptions({ mime, address, limit })
+        const total = await this._store.getInscriptionCount()
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ total, count: inscriptions.length, inscriptions, filters: { mime: mime || null, address: address || null } }))
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: err.message }))
+      }
+      return
+    }
+
+    // GET /address/:addr/history — transaction history for an address (via WoC)
+    const addrMatch = path.match(/^\/address\/([13][a-km-zA-HJ-NP-Z1-9]{24,33})\/history$/)
+    if (req.method === 'GET' && addrMatch) {
+      const addr = addrMatch[1]
+      const cached = this._addressCache.get(addr)
+      if (cached && Date.now() - cached.time < 60000) {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ address: addr, history: cached.data, cached: true }))
+        return
+      }
+      try {
+        const resp = await fetch('https://api.whatsonchain.com/v1/bsv/main/address/' + addr + '/history', { signal: AbortSignal.timeout(10000) })
+        if (!resp.ok) throw new Error('WoC returned ' + resp.status)
+        const history = await resp.json()
+        this._addressCache.set(addr, { data: history, time: Date.now() })
+        // Prune cache if it grows too large
+        if (this._addressCache.size > 100) {
+          const oldest = this._addressCache.keys().next().value
+          this._addressCache.delete(oldest)
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ address: addr, history, cached: false }))
+      } catch (err) {
+        res.writeHead(502, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Failed to fetch address history: ' + err.message }))
+      }
+      return
+    }
+
+    // GET /inscription/:txid/:vout/content — serve raw inscription content
+    const inscMatch = path.match(/^\/inscription\/([0-9a-f]{64})\/(\d+)\/content$/)
+    if (req.method === 'GET' && inscMatch) {
+      if (!this._store) {
+        res.writeHead(500, { 'Content-Type': 'text/plain' })
+        res.end('Store not available')
+        return
+      }
+      try {
+        const record = await this._store.getInscription(inscMatch[1], parseInt(inscMatch[2], 10))
+        if (!record || !record.content) {
+          res.writeHead(404, { 'Content-Type': 'text/plain' })
+          res.end('Not found')
+          return
+        }
+        const buf = Buffer.from(record.content, 'hex')
+        res.writeHead(200, {
+          'Content-Type': record.contentType || 'application/octet-stream',
+          'Content-Length': buf.length,
+          'Cache-Control': 'public, max-age=31536000, immutable'
+        })
+        res.end(buf)
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'text/plain' })
+        res.end(err.message)
+      }
+      return
+    }
+
+    // POST /scan-address — scan an address for inscriptions via WhatsOnChain
+    if (req.method === 'POST' && path === '/scan-address') {
+      if (!this._store) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Store not available' }))
+        return
+      }
+      let body = ''
+      req.on('data', chunk => { body += chunk })
+      req.on('end', async () => {
+        try {
+          const { address } = JSON.parse(body)
+          if (!address || typeof address !== 'string' || address.length < 25 || address.length > 35) {
+            res.writeHead(400, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ error: 'Invalid address' }))
+            return
+          }
+
+          // Stream progress via SSE
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'Access-Control-Allow-Origin': '*'
+          })
+
+          const result = await scanAddress(address, this._store, (progress) => {
+            res.write('data: ' + JSON.stringify(progress) + '\n\n')
+          })
+
+          res.write('data: ' + JSON.stringify({ phase: 'complete', result }) + '\n\n')
+          res.end()
+        } catch (err) {
+          if (!res.headersSent) {
+            res.writeHead(500, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ error: err.message }))
+          } else {
+            res.write('data: ' + JSON.stringify({ phase: 'error', error: err.message }) + '\n\n')
+            res.end()
+          }
+        }
+      })
+      return
+    }
+
+    // POST /rebuild-inscription-index — deduplicate and rebuild secondary indexes
+    if (req.method === 'POST' && path === '/rebuild-inscription-index') {
+      if (!this._store) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Store not available' }))
+        return
+      }
+      try {
+        const count = await this._store.rebuildInscriptionIndex()
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ rebuilt: count }))
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: err.message }))
+      }
+      return
+    }
+
+    // GET /apps — app health, SSL, and usage data
+    if (req.method === 'GET' && path === '/apps') {
+      const apps = []
+      if (this._config.apps) {
+        for (const app of this._config.apps) {
+          const entry = this._appChecks.get(app.url) || { checks: [], lastError: null }
+          const checks = entry.checks
+          const checksUp = checks.filter(c => c.up).length
+          const latest = checks.length > 0 ? checks[checks.length - 1] : null
+
+          let ssl = null
+          try {
+            const hostname = new URL(app.url).hostname
+            const cached = this._appSSLCache.get(hostname)
+            if (cached && cached.data && Date.now() - cached.checkedAt < 3600000) {
+              ssl = cached.data
+            } else {
+              ssl = await this._checkSSL(hostname)
+              this._appSSLCache.set(hostname, { data: ssl, checkedAt: Date.now() })
+            }
+          } catch {}
+
+          const usage = this._requestTracker.get(app.bridgeDomain) || { total: 0, endpoints: {}, lastSeen: null }
+
+          apps.push({
+            name: app.name,
+            url: app.url,
+            bridgeDomain: app.bridgeDomain,
+            health: {
+              status: latest ? (latest.up ? 'online' : 'offline') : 'unknown',
+              statusCode: latest ? latest.statusCode : 0,
+              responseTimeMs: latest ? latest.responseTimeMs : 0,
+              lastCheck: latest ? latest.timestamp : null,
+              lastError: entry.lastError,
+              uptimePercent: checks.length > 0 ? Math.round((checksUp / checks.length) * 1000) / 10 : 0,
+              checksTotal: checks.length,
+              checksUp
+            },
+            ssl,
+            usage: {
+              totalRequests: usage.total,
+              endpoints: { ...usage.endpoints },
+              lastSeen: usage.lastSeen
+            }
+          })
+        }
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ apps }))
+      return
+    }
+
     res.writeHead(404)
     res.end('Not Found')
   }
@@ -546,6 +917,7 @@ export class StatusServer {
    * @returns {Promise<void>}
    */
   stop () {
+    this.stopAppMonitoring()
     return new Promise((resolve) => {
       if (this._server) {
         this._server.close(() => resolve())

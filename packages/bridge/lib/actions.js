@@ -233,3 +233,141 @@ export async function runFund ({ config, store, rawHex, log }) {
 
   return { stored: result.matches.length, balance }
 }
+
+/**
+ * Send BSV from this bridge's wallet to a destination address.
+ * Builds a P2PKH tx, broadcasts via BSV P2P.
+ *
+ * @param {object} opts
+ * @param {object} opts.config - Bridge config (wif, pubkeyHex)
+ * @param {object} opts.store  - Open PersistentStore instance
+ * @param {string} opts.toAddress - Destination BSV address
+ * @param {number} opts.amount - Amount in satoshis to send
+ * @param {function} opts.log  - Logger
+ * @returns {object} { txid, sent, change }
+ */
+export async function runSend ({ config, store, toAddress, amount, log }) {
+  const { Transaction, P2PKH, PrivateKey, SatoshisPerKilobyte } = await import('@bsv/sdk')
+
+  if (!toAddress || typeof toAddress !== 'string') {
+    throw new Error('Destination address is required.')
+  }
+  if (!amount || amount < 546) {
+    throw new Error('Amount must be at least 546 satoshis (dust limit).')
+  }
+
+  // Get UTXOs from local store
+  const localUtxos = await store.getUnspentUtxos()
+  if (!localUtxos.length) {
+    throw new Error('No UTXOs available. Wallet is empty.')
+  }
+
+  // Map local UTXO format and gather enough to cover amount + fee
+  const utxos = []
+  let gathered = 0
+  for (const u of localUtxos) {
+    const rawHex = await store.getTx(u.txid)
+    if (!rawHex) continue
+    utxos.push({ tx_hash: u.txid, tx_pos: u.vout, value: u.satoshis, rawHex })
+    gathered += u.satoshis
+    if (gathered >= amount + 1000) break // rough fee estimate
+  }
+
+  if (gathered < amount + 546) {
+    throw new Error(`Insufficient funds. Have ${gathered} sats, need ${amount} + fee.`)
+  }
+
+  log('step', `Sending ${amount} sats to ${toAddress}`)
+
+  const privateKey = PrivateKey.fromWif(config.wif)
+  const selfAddress = privateKey.toPublicKey().toAddress()
+  const p2pkh = new P2PKH()
+  const selfLockingScript = p2pkh.lock(selfAddress)
+
+  const tx = new Transaction()
+
+  for (const utxo of utxos) {
+    const sourceTransaction = Transaction.fromHex(utxo.rawHex)
+    tx.addInput({
+      sourceTransaction,
+      sourceOutputIndex: utxo.tx_pos,
+      unlockingScriptTemplate: p2pkh.unlock(
+        privateKey,
+        'all',
+        false,
+        utxo.value,
+        selfLockingScript
+      )
+    })
+  }
+
+  // Output 0: payment to destination
+  tx.addOutput({
+    lockingScript: p2pkh.lock(toAddress),
+    satoshis: amount
+  })
+
+  // Output 1: change back to self
+  tx.addOutput({
+    lockingScript: p2pkh.lock(selfAddress),
+    change: true
+  })
+
+  await tx.fee(new SatoshisPerKilobyte(1000))
+  await tx.sign()
+
+  const txHex = tx.toHex()
+  const txid = tx.id('hex')
+
+  // Broadcast via BSV P2P
+  log('step', 'Connecting to BSV network...')
+  const { BSVNodeClient } = await import('./bsv-node-client.js')
+  const bsvNode = new BSVNodeClient()
+
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      bsvNode.disconnect()
+      reject(new Error('BSV node connection timeout (15s)'))
+    }, 15000)
+    bsvNode.on('handshake', () => { clearTimeout(timeout); resolve() })
+    bsvNode.on('error', (err) => { clearTimeout(timeout); reject(err) })
+    bsvNode.connect()
+  })
+
+  try {
+    bsvNode.broadcastTx(txHex)
+    log('step', `Broadcast txid: ${txid}`)
+
+    // Mark spent UTXOs in store
+    for (const utxo of utxos) {
+      await store.spendUtxo(utxo.tx_hash, utxo.tx_pos)
+    }
+
+    // Store the new tx and change UTXO
+    await store.putTx(txid, txHex)
+    const parsedTx = Transaction.fromHex(txHex)
+    const changeOutput = parsedTx.outputs[1]
+    if (changeOutput && changeOutput.satoshis > 0) {
+      const { pubkeyToHash160, checkTxForWatched } = await import('./output-parser.js')
+      const hash160 = pubkeyToHash160(config.pubkeyHex)
+      const result = checkTxForWatched(txHex, new Set([hash160]))
+      for (const match of result.matches) {
+        await store.putUtxo({
+          txid,
+          vout: match.vout,
+          satoshis: match.satoshis,
+          scriptHex: match.scriptHex,
+          address: config.pubkeyHex
+        })
+      }
+    }
+
+    await new Promise(r => setTimeout(r, 1000))
+    const balance = await store.getBalance()
+    log('done', `Sent ${amount} sats to ${toAddress}. Remaining balance: ${balance} sats`, { txid, sent: amount, balance })
+
+    return { txid, sent: amount, balance }
+  } finally {
+    bsvNode.disconnect()
+  }
+}

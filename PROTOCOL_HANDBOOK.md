@@ -128,7 +128,7 @@ Tx arrives (P2P / broadcast / WoC lookup)
 | File | Role |
 |---|---|
 | `packages/bridge/lib/output-parser.js` | All parsing logic. Exports: `parseTx`, `parseOutputScript`, `parseOpReturn`, `parseOrdinal`, `pubkeyToHash160`, `addressToHash160`, `checkTxForWatched` |
-| `packages/bridge/test/output-parser.test.js` | 268 tests (23 protocol-specific) |
+| `packages/bridge/test/output-parser.test.js` | 383 tests (23 protocol-specific + 115 indexing) |
 | `packages/bridge/lib/status-server.js` | Serves `/tx/:txid` and `/mempool` endpoints |
 | `dashboard/index.html` | Protocol badges, Tx Explorer, parsed data rendering |
 
@@ -168,6 +168,24 @@ In the side panel when a bridge is selected:
 ### Clickable Mempool Txids
 Click any txid in the mempool list → auto-fills the Tx Explorer and triggers lookup.
 
+### Apps Tab
+Configure apps in `~/.relay-bridge/config.json`:
+```json
+"apps": [
+  {
+    "name": "My App",
+    "url": "https://myapp.example.com",
+    "healthUrl": "http://127.0.0.1:3000",
+    "bridgeDomain": "bridge.myapp.example.com"
+  }
+]
+```
+
+Fields:
+- **url** — Public URL shown in dashboard and used for health checks by default
+- **healthUrl** (optional) — Local URL for health checks. Use this when your app runs behind nginx on the same VPS. Without it, the bridge health-checks itself through DNS → public IP → TLS → nginx, which can timeout and show false errors. Point this to `http://127.0.0.1:<port>` or `http://127.0.0.1:9333/status` (the bridge itself) to avoid loopback timeouts.
+- **bridgeDomain** — The domain that proxies to your bridge (for request tracking)
+
 ---
 
 ## Adding a New Protocol
@@ -204,6 +222,112 @@ MetaNet magic:   6d657461 ("meta" as 4 hex bytes)
 | `0x4d` | OP_PUSHDATA2 — next 2 bytes (LE) is length |
 | `0x4e` | OP_PUSHDATA4 — next 4 bytes (LE) is length |
 | `0x51`–`0x60` | OP_1 through OP_16 — pushes number |
+
+---
+
+## Transaction Confirmation Tracking
+
+Every tx the bridge sees is tracked through a lifecycle: `mempool` → `confirmed` → `orphaned` → `dropped`.
+
+### Check tx status
+```bash
+curl http://144.202.48.217:9333/tx/d312e66b15eed296497c3d3855df6e07e0380feca46d3cf68da3ba5d58804f00/status
+```
+
+Returns `{ state, firstSeen, lastSeen, source, blockHash?, height?, block? }`.
+
+### Get Merkle proof
+```bash
+curl http://144.202.48.217:9333/proof/d312e66b15eed296497c3d3855df6e07e0380feca46d3cf68da3ba5d58804f00
+```
+
+Returns `{ txid, blockHash, height, proof: { nodes[], index } }`. 404 if not confirmed.
+
+---
+
+## Price Feed
+
+### Get BSV/USD price
+```bash
+curl http://144.202.48.217:9333/price
+```
+
+Returns `{ usd, currency, source, cached, ttl }`. Cached 60 seconds, sourced from WoC.
+
+---
+
+## BSV-20 Token Tracking
+
+Tokens are indexed from confirmed transactions only (no mempool). Deploy + mint supported; transfers deferred to Phase 2.
+
+### List all tokens
+```bash
+curl http://144.202.48.217:9333/tokens
+```
+
+### Get token deploy info
+```bash
+curl http://144.202.48.217:9333/token/ordi
+```
+
+### Check token balance by scriptHash
+```bash
+curl http://144.202.48.217:9333/token/ordi/balance/abc123def456...
+```
+
+**scriptHash** = SHA256 of the locking script hex. Universal — works for P2PKH, P2PK, P2SH, bare scripts.
+
+### Token rules enforced
+- First deploy wins (chain-ordered by block height)
+- Tick normalized to lowercase
+- Mint validates: amount <= per-tx limit, totalMinted + amount <= max supply
+- All ops written as atomic LevelDB `batch()` with idempotency markers
+
+---
+
+## Content-Addressed Storage (CAS)
+
+Inscription content is stored by SHA256 hash to deduplicate and reduce DB pressure.
+
+| Size | Where |
+|---|---|
+| < 4 KB | Inline in LevelDB |
+| >= 4 KB | Filesystem: `data/content/<first2>/<hash>` |
+
+Content served at `/inscription/:txid/:vout/content` with immutable cache headers.
+
+---
+
+## Historical Backfill
+
+Walk historical blocks and index inscriptions + BSV-20 token ops:
+
+```bash
+relay-bridge backfill --from=800000 --to=890000
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--from` | 800000 | Start height |
+| `--to` | chain tip | End height |
+
+- Resumes from `meta.backfill_height` if interrupted
+- Rate limited: 350ms between WoC calls
+- `applied!txid` markers prevent duplicate processing
+- Progress logged every 100 blocks
+
+---
+
+## Files (updated)
+
+| File | Role |
+|---|---|
+| `packages/bridge/lib/output-parser.js` | Parsing + `scriptHash` on every output |
+| `packages/bridge/lib/persistent-store.js` | Storage: txStatus, txBlock, content (CAS), tokens sublevels |
+| `packages/bridge/lib/status-server.js` | All HTTP endpoints including price, tokens, proof, tx status |
+| `packages/bridge/cli.js` | CLI commands including `backfill` |
+| `packages/bridge/test/persistent-store.test.js` | Indexing tests (confirmation, CAS, tokens, backfill) |
+| `dashboard/index.html` | Protocol badges, Tx Explorer, parsed data rendering |
 
 ---
 

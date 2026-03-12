@@ -32,6 +32,9 @@ switch (command) {
   case 'secret':
     await cmdSecret()
     break
+  case 'backfill':
+    await cmdBackfill()
+    break
   default:
     console.log('relay-bridge — Federated SPV relay mesh bridge\n')
     console.log('Commands:')
@@ -42,6 +45,7 @@ switch (command) {
     console.log('  fund        Import a funding transaction (raw hex)')
     console.log('  deregister  Deregister this bridge from the mesh')
     console.log('  secret      Show your operator secret for dashboard login')
+    console.log('  backfill    Scan historical blocks for inscriptions/tokens')
     console.log('')
     console.log('Usage: relay-bridge <command> [options]')
     process.exit(command ? 1 : 0)
@@ -92,6 +96,131 @@ async function cmdSecret () {
   console.log(`Operator secret: ${config.statusSecret}`)
   console.log('')
   console.log('Use this to log into the dashboard operator panel.')
+}
+
+async function cmdBackfill () {
+  const dir = defaultConfigDir()
+
+  if (!(await configExists(dir))) {
+    console.log('No config found. Run: relay-bridge init')
+    process.exit(1)
+  }
+
+  const config = await loadConfig(dir)
+  const { PersistentStore } = await import('./lib/persistent-store.js')
+  const { parseTx } = await import('./lib/output-parser.js')
+
+  const dataDir = config.dataDir || join(dir, 'data')
+  const store = new PersistentStore(dataDir)
+  await store.open()
+
+  // Parse CLI args: --from=HEIGHT --to=HEIGHT
+  const args = {}
+  for (const arg of process.argv.slice(3)) {
+    const [k, v] = arg.replace(/^--/, '').split('=')
+    if (k && v) args[k] = v
+  }
+
+  const fromHeight = parseInt(args.from || '800000', 10)
+  const toHeight = args.to === 'latest' || !args.to ? null : parseInt(args.to, 10)
+  const resumeHeight = await store.getMeta('backfill_height', null)
+  const startHeight = resumeHeight ? resumeHeight + 1 : fromHeight
+
+  console.log(`Backfill: scanning from block ${startHeight}${toHeight ? ' to ' + toHeight : ' to tip'}`)
+  if (resumeHeight) console.log(`  Resuming from height ${resumeHeight + 1}`)
+
+  let indexed = 0
+  let blocksScanned = 0
+  let height = startHeight
+
+  try {
+    while (true) {
+      // Get block hash for this height
+      const hashResp = await fetch(`https://api.whatsonchain.com/v1/bsv/main/block/height/${height}`)
+      if (!hashResp.ok) {
+        if (hashResp.status === 404) {
+          console.log(`  Height ${height} not found — reached chain tip`)
+          break
+        }
+        console.log(`  WoC error at height ${height}: ${hashResp.status}, retrying in 5s...`)
+        await new Promise(r => setTimeout(r, 5000))
+        continue
+      }
+      const blockInfo = await hashResp.json()
+      const blockHash = blockInfo.hash || blockInfo
+      const blockTime = blockInfo.time || 0
+
+      // Get block txid list
+      await new Promise(r => setTimeout(r, 350)) // rate limit
+      const txListResp = await fetch(`https://api.whatsonchain.com/v1/bsv/main/block/${blockHash}/page/1`)
+      if (!txListResp.ok) {
+        console.log(`  Failed to get tx list for block ${height}, skipping`)
+        height++
+        continue
+      }
+      const txids = await txListResp.json()
+
+      // For each txid, check if already applied, then fetch + parse
+      for (const txid of txids) {
+        // Idempotency: skip if already processed
+        const applied = await store.getMeta(`applied!${txid}`, null)
+        if (applied) continue
+
+        // Check if we already have this tx
+        let rawHex = await store.getTx(txid)
+        if (!rawHex) {
+          await new Promise(r => setTimeout(r, 350)) // rate limit
+          const txResp = await fetch(`https://api.whatsonchain.com/v1/bsv/main/tx/${txid}/hex`)
+          if (!txResp.ok) continue
+          rawHex = await txResp.text()
+          await store.putTx(txid, rawHex)
+        }
+
+        // Parse and check for inscriptions/BSV-20
+        const parsed = parseTx(rawHex)
+        let hasInterest = false
+
+        for (const output of parsed.outputs) {
+          if (output.type === 'ordinal' && output.parsed) {
+            await store.putInscription({
+              txid,
+              vout: output.vout,
+              contentType: output.parsed.contentType || null,
+              contentSize: output.parsed.content ? output.parsed.content.length / 2 : 0,
+              content: output.parsed.content || null,
+              isBsv20: output.parsed.isBsv20 || false,
+              bsv20: output.parsed.bsv20 || null,
+              timestamp: (blockTime || 0) * 1000,
+              address: output.hash160 || null
+            })
+            indexed++
+            hasInterest = true
+          }
+        }
+
+        // Mark tx as confirmed (trusting WoC block placement)
+        await store.updateTxStatus(txid, 'confirmed', { blockHash, height, source: 'backfill' })
+        await store.putMeta(`applied!${txid}`, { height, blockHash })
+      }
+
+      await store.putMeta('backfill_height', height)
+      blocksScanned++
+
+      if (blocksScanned % 100 === 0) {
+        console.log(`  Block ${height} — ${blocksScanned} scanned, ${indexed} inscriptions indexed`)
+      }
+
+      if (toHeight && height >= toHeight) break
+      height++
+    }
+  } catch (err) {
+    console.log(`  Backfill error at height ${height}: ${err.message}`)
+    console.log(`  Progress saved — resume with: relay-bridge backfill`)
+  } finally {
+    await store.close()
+  }
+
+  console.log(`Backfill complete: ${blocksScanned} blocks scanned, ${indexed} inscriptions indexed`)
 }
 
 async function cmdRegister () {
@@ -430,6 +559,7 @@ async function cmdStart () {
 
   txRelay.on('tx:new', async ({ txid, rawHex }) => {
     try { await store.putTx(txid, rawHex) } catch {}
+    try { await store.updateTxStatus(txid, 'mempool', { source: 'p2p' }) } catch {}
     // Index inscriptions
     try {
       const { parseTx } = await import('./lib/output-parser.js')

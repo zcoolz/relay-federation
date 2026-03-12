@@ -194,7 +194,7 @@
   /* ── Stats hero (overview tab) ───────────────────── */
   .stats-hero {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     gap: 12px;
     margin-bottom: 20px;
   }
@@ -796,6 +796,7 @@
     <button onclick="setTab('mempool')">Mempool</button>
     <button onclick="setTab('explorer')">Explorer</button>
     <button onclick="setTab('inscriptions')">Inscriptions</button>
+    <button onclick="setTab('tokens')">Tokens</button>
     <button onclick="setTab('apps')">Apps</button>
   </div>
   <div class="header-right">
@@ -934,6 +935,7 @@ let activeTab = 'overview';
 let savedExplorerInput = '';
 let savedExplorerResult = '';
 let appsData = null;
+let latestPrice = null;
 
 try { const saved = localStorage.getItem('relay_operator_tokens'); if (saved) operatorTokens = JSON.parse(saved); } catch {}
 
@@ -1028,6 +1030,12 @@ async function pollAll() {
   if (!selectedBridge && bridgeData.size > 0) {
     selectedBridge = bridgeData.keys().next().value;
   }
+  // Fetch price from first online bridge
+  const firstOnline = results.find(b => !b._error);
+  if (firstOnline) {
+    fetch(firstOnline._url + '/price', { signal: AbortSignal.timeout(5000) })
+      .then(r => r.ok ? r.json() : null).then(d => { if (d) latestPrice = d; }).catch(() => {});
+  }
   renderHeader();
   renderBridgeRail();
   renderActiveTab(true);
@@ -1081,22 +1089,24 @@ function setTab(tab) {
   }
   activeTab = tab;
   const buttons = document.querySelectorAll('#headerTabs button');
-  const tabs = ['overview', 'mempool', 'explorer', 'inscriptions', 'apps'];
+  const tabs = ['overview', 'mempool', 'explorer', 'inscriptions', 'tokens', 'apps'];
   buttons.forEach((btn, i) => btn.classList.toggle('active', tabs[i] === tab));
   renderActiveTab();
   if (tab === 'apps') setTimeout(fetchAppsData, 50);
+  if (tab === 'tokens') setTimeout(fetchTokens, 50);
 }
 
 function renderActiveTab(fromPoll) {
   const el = document.getElementById('tabContent');
   // Skip apps/explorer re-render during poll (preserves state)
-  if (fromPoll && (activeTab === 'apps' || activeTab === 'explorer' || activeTab === 'inscriptions')) return;
+  if (fromPoll && (activeTab === 'apps' || activeTab === 'explorer' || activeTab === 'inscriptions' || activeTab === 'tokens')) return;
   let html;
   switch (activeTab) {
     case 'overview': html = renderOverviewTab(); break;
     case 'mempool': html = renderMempoolTab(); break;
     case 'explorer': html = renderExplorerTab(); break;
     case 'inscriptions': html = renderInscriptionsTab(); break;
+    case 'tokens': html = renderTokensTab(); break;
     case 'apps': html = renderAppsTab(); break;
     default: html = renderOverviewTab();
   }
@@ -1126,6 +1136,8 @@ function renderOverviewTab() {
   html += '<div class="stat-card glass"><div class="stat-value green">' + fmtHeight(bestH) + '</div><div class="stat-label">Best Height</div></div>';
   html += '<div class="stat-card glass"><div class="stat-value">' + totalPeers + '</div><div class="stat-label">Mesh Peers</div></div>';
   html += '<div class="stat-card glass"><div class="stat-value">' + totalMempool + '</div><div class="stat-label">Mempool Txs</div></div>';
+  const priceStr = latestPrice && latestPrice.usd ? '$' + latestPrice.usd.toFixed(2) : '—';
+  html += '<div class="stat-card glass"><div class="stat-value" style="color:var(--accent-blue)">' + priceStr + '</div><div class="stat-label">BSV / USD</div></div>';
   html += '</div>';
 
   const b = bridgeData.get(selectedBridge);
@@ -1218,6 +1230,7 @@ function renderOverviewTab() {
     html += '</div>';
     html += '<button class="btn ghost" onclick="openLogViewer(\'' + b._url + '\')" style="width:100%;margin-top:8px">View Live Logs</button>';
     if (isOperator(b._url)) html += '<button class="btn ghost" onclick="logoutOperator(\'' + b._url + '\')" style="width:100%;margin-top:4px;color:var(--text-dim)">Logout</button>';
+    html += '<div style="margin-top:10px;padding:8px 10px;background:rgba(88,166,255,0.06);border:1px solid rgba(88,166,255,0.12);border-radius:var(--radius-sm);font-size:11px;color:var(--text-muted)">To backfill historical inscriptions and tokens, run <span style="font-family:var(--mono);color:var(--accent-blue)">relay-bridge backfill</span> from the CLI.</div>';
     html += '</div>';
   }
 
@@ -1285,26 +1298,9 @@ function renderExplorerTab() {
   html += '</div>';
   html += '<div id="txLookupResult"></div>';
 
-  // Guided examples + live stream as empty state (only when nothing searched)
+  // Live stream as empty state (only when nothing searched)
   if (!savedExplorerResult) {
-    html += '<div style="margin-top:16px">';
-    html += '<div style="font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Try these</div>';
-    html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px">';
-    const examples = [
-      { label: 'MetaNet tx', badge: 'metanet', txid: '5dac856f1580693e5623bf09b2f34791ef746930f298368f9adad424bf2e1aa1' },
-      { label: 'B:// file', badge: 'b', txid: '822463bd53681de0327f58d27b3cc0a792f8176fdc75e79fc256cf77d500097f' },
-      { label: 'Ordinal NFT', badge: 'ordinal', txid: 'de7a573dee3aa95ded0d73d1dd5f5cc2b603186c220a4a7a0f15b15ff3a32431' },
-      { label: 'BSV-20 token', badge: 'bsv-20', txid: 'df356acebad6642bf7859d2de48eb3d6e3917d9cd360dcb8eea02ca7d7602206' }
-    ];
-    for (const ex of examples) {
-      html += '<button style="display:flex;align-items:center;gap:6px;padding:6px 12px;background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:6px;color:var(--text-secondary);font-size:12px;cursor:pointer" onclick="document.getElementById(\'txLookupInput\').value=\'' + ex.txid + '\';explorerSearch()">';
-      html += protocolBadge('op_return', ex.badge);
-      html += ex.label;
-      html += '</button>';
-    }
-    html += '</div>';
-    html += '</div>';
-    html += '<div id="explorerLiveStream"></div>';
+    html += '<div id="explorerLiveStream" style="margin-top:16px"></div>';
     setTimeout(renderExplorerLiveStream, 50);
   }
 
@@ -1524,14 +1520,20 @@ async function lookupTx(bridgeUrl) {
   el.innerHTML = '<div style="color:var(--text-muted);font-size:12px;margin-top:12px">Fetching from bridge...</div>';
   savedExplorerInput = txid;
   try {
-    const r = await fetch(bridgeUrl + '/tx/' + txid, { signal: AbortSignal.timeout(15000) });
-    const data = await r.json();
+    const [txRes, statusRes, proofRes] = await Promise.all([
+      fetch(bridgeUrl + '/tx/' + txid, { signal: AbortSignal.timeout(15000) }),
+      fetch(bridgeUrl + '/tx/' + txid + '/status', { signal: AbortSignal.timeout(5000) }).catch(() => null),
+      fetch(bridgeUrl + '/proof/' + txid, { signal: AbortSignal.timeout(5000) }).catch(() => null)
+    ]);
+    const data = await txRes.json();
     if (data.error) {
       el.innerHTML = '<div style="color:var(--accent-red);font-size:12px;margin-top:12px">' + escapeHtml(data.error) + '</div>';
       savedExplorerResult = el.innerHTML;
       return;
     }
-    el.innerHTML = renderTxDetail(data);
+    const txStatus = statusRes && statusRes.ok ? await statusRes.json() : null;
+    const txProof = proofRes && proofRes.ok ? await proofRes.json() : null;
+    el.innerHTML = renderTxDetail(data, txStatus, txProof);
     savedExplorerResult = el.innerHTML;
   } catch (e) {
     el.innerHTML = '<div style="color:var(--accent-red);font-size:12px;margin-top:12px">' + escapeHtml(e.message) + '</div>';
@@ -1539,7 +1541,7 @@ async function lookupTx(bridgeUrl) {
   }
 }
 
-function renderTxDetail(tx) {
+function renderTxDetail(tx, txStatus, txProof) {
   let html = '<div class="glass" style="padding:16px;margin-top:12px">';
   const src = (tx.source || '').toLowerCase();
   const isLocal = src === 'local' || src === 'p2p' || src === 'mempool' || src === 'store';
@@ -1555,6 +1557,36 @@ function renderTxDetail(tx) {
   html += ' &middot; ' + (tx.outputs ? tx.outputs.length : 0) + ' out';
   html += '</div>';
   html += '<div style="font-size:11px;color:var(--text-dim);margin-bottom:12px">Your bridge is connected to <strong style="color:var(--text-muted)">' + peerCount + ' peers</strong> on the BSV network</div>';
+
+  // Confirmation status
+  if (txStatus) {
+    const state = txStatus.state || 'unknown';
+    const stateColors = { mempool: 'yellow', confirmed: 'green', orphaned: 'red', dropped: 'red' };
+    const stateColor = stateColors[state] || '';
+    html += '<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;margin-bottom:12px;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:var(--radius-sm)">';
+    html += '<span class="status-dot ' + stateColor + '" style="display:inline-block;width:8px;height:8px;border-radius:50%"></span>';
+    html += '<span style="font-size:12px;color:var(--text-secondary);font-weight:500;text-transform:capitalize">' + escapeHtml(state) + '</span>';
+    if (txStatus.height) html += '<span style="font-size:11px;color:var(--text-muted)">&middot; Block ' + txStatus.height.toLocaleString() + '</span>';
+    if (txStatus.blockHash) html += '<span style="font-size:11px;color:var(--text-dim);font-family:var(--mono)">' + txStatus.blockHash.slice(0, 16) + '...</span>';
+    if (txStatus.firstSeen) html += '<span style="font-size:10px;color:var(--text-dim);margin-left:auto">first seen ' + new Date(txStatus.firstSeen).toLocaleString() + '</span>';
+    html += '</div>';
+  }
+
+  // Merkle proof
+  if (txProof && txProof.proof) {
+    html += '<div style="padding:10px 14px;margin-bottom:12px;background:rgba(63,185,80,0.06);border:1px solid rgba(63,185,80,0.15);border-radius:var(--radius-sm)">';
+    html += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">';
+    html += '<span style="color:var(--accent-green);font-size:12px;font-weight:600">Merkle Proof Verified</span>';
+    html += '</div>';
+    html += '<div style="font-size:11px;color:var(--text-muted)">';
+    html += 'Block: <span style="color:var(--text-secondary);font-family:var(--mono)">' + (txProof.height ? txProof.height.toLocaleString() : '-') + '</span>';
+    html += ' &middot; Index: <span style="color:var(--text-secondary)">' + (txProof.proof.index !== undefined ? txProof.proof.index : '-') + '</span>';
+    html += ' &middot; Path: <span style="color:var(--text-secondary)">' + (txProof.proof.nodes ? txProof.proof.nodes.length : 0) + ' nodes</span>';
+    html += '</div>';
+    if (txProof.blockHash) html += '<div style="font-size:10px;color:var(--text-dim);font-family:var(--mono);margin-top:4px">' + txProof.blockHash + '</div>';
+    html += '</div>';
+  }
+
   let decodedCallout = false;
   if (tx.outputs) {
     for (const o of tx.outputs) {
@@ -1566,11 +1598,11 @@ function renderTxDetail(tx) {
       if (o.hash160) html += '<div style="font-size:10px;color:var(--text-dim);font-family:var(--mono);margin-top:3px">hash160: ' + o.hash160 + '</div>';
       if (o.parsed) {
         html += renderParsedData(o.type, o.protocol, o.parsed);
-        if (!decodedCallout) { html += '<div style="font-size:10px;color:var(--text-dim);margin-top:6px;font-style:italic">Decoded by your bridge \u2014 block explorers show this as raw hex</div>'; decodedCallout = true; }
+        if (!decodedCallout) { html += '<div style="font-size:13px;color:var(--text-muted);margin-top:6px;font-style:italic">Decoded by your bridge \u2014 block explorers show this as raw hex</div>'; decodedCallout = true; }
       }
       else if (o.type === 'op_return' && o.data && o.data.length > 0) {
         html += renderRawOpReturn(o.data);
-        if (!decodedCallout) { html += '<div style="font-size:10px;color:var(--text-dim);margin-top:6px;font-style:italic">Decoded by your bridge \u2014 block explorers show this as raw hex</div>'; decodedCallout = true; }
+        if (!decodedCallout) { html += '<div style="font-size:13px;color:var(--text-muted);margin-top:6px;font-style:italic">Decoded by your bridge \u2014 block explorers show this as raw hex</div>'; decodedCallout = true; }
       }
       html += '</div>';
     }
@@ -1819,6 +1851,7 @@ function renderInscriptionList(el, data) {
     html += '<div class="insc-txid" onclick="setTab(\'explorer\');setTimeout(()=>{const i=document.getElementById(\'txLookupInput\');if(i){i.value=\'' + insc.txid + '\';explorerSearch()}},50)">' + insc.txid + ':' + insc.vout + '</div>';
     html += '<div class="insc-meta">';
     html += protocolBadge('ordinal', insc.isBsv20 ? 'bsv-20' : 'ordinal');
+    if (insc.contentHash) html += '<span style="background:rgba(63,185,80,0.15);color:var(--accent-green);padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600">CAS</span>';
     if (insc.contentType) html += '<span>' + escapeHtml(insc.contentType) + '</span>';
     if (insc.contentSize) html += '<span>' + insc.contentSize + ' bytes</span>';
     html += '<span>' + new Date(insc.timestamp).toLocaleString() + '</span>';
@@ -1920,6 +1953,111 @@ async function startScanAddress(address) {
     }
   } catch (e) {
     el.innerHTML = '<div class="glass" style="padding:12px;color:var(--accent-red)">Scan failed: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+// ── Tokens tab ──────────────────────────────────────
+function renderTokensTab() {
+  const b = bridgeData.get(selectedBridge);
+  if (!b) return '<div class="no-results">Select a bridge</div>';
+
+  let html = '<div class="tab-title">BSV-20 Tokens</div>';
+  html += '<div class="inscription-filters">';
+  html += '<input type="text" id="tokenTickFilter" placeholder="Filter by tick...">';
+  html += '<button class="btn primary sm" onclick="fetchTokens()">Load Tokens</button>';
+  html += '</div>';
+  html += '<div id="tokenResults"><div style="color:var(--text-dim);text-align:center;padding:30px">Click Load Tokens to fetch indexed BSV-20 tokens from this bridge</div></div>';
+  return html;
+}
+
+async function fetchTokens() {
+  const b = bridgeData.get(selectedBridge);
+  if (!b) return;
+  const el = document.getElementById('tokenResults');
+  if (!el) return;
+  el.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:30px">Loading...</div>';
+
+  try {
+    const r = await fetch(b._url + '/tokens', { signal: AbortSignal.timeout(10000) });
+    const data = await r.json();
+    if (data.error) { el.innerHTML = '<div style="color:var(--accent-red);padding:20px">' + escapeHtml(data.error) + '</div>'; return; }
+
+    const tokens = data.tokens || [];
+    const filter = (document.getElementById('tokenTickFilter')?.value || '').trim().toLowerCase();
+    const filtered = filter ? tokens.filter(t => (t.tick || '').toLowerCase().includes(filter)) : tokens;
+
+    if (filtered.length === 0) {
+      el.innerHTML = '<div class="glass" style="padding:30px;text-align:center"><div style="color:var(--text-dim)">No BSV-20 tokens found</div></div>';
+      return;
+    }
+
+    let html = '<div style="color:var(--text-muted);font-size:11px;margin-bottom:10px">' + filtered.length + ' token' + (filtered.length !== 1 ? 's' : '') + ' indexed</div>';
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px">';
+    for (const tok of filtered) {
+      html += '<div class="glass" style="padding:14px;cursor:pointer" onclick="showTokenDetail(\'' + escapeHtml(tok.tick) + '\')">';
+      html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">';
+      html += protocolBadge('op_return', 'bsv-20');
+      html += '<span style="font-size:14px;font-weight:600;color:var(--text-primary)">' + escapeHtml(tok.tick) + '</span>';
+      html += '</div>';
+      html += '<div style="font-size:11px;color:var(--text-muted)">';
+      if (tok.max) html += 'Max: <span style="color:var(--text-secondary)">' + escapeHtml(String(tok.max)) + '</span> &middot; ';
+      if (tok.lim) html += 'Limit: <span style="color:var(--text-secondary)">' + escapeHtml(String(tok.lim)) + '</span> &middot; ';
+      html += 'Mints: <span style="color:var(--text-secondary)">' + (tok.mintCount || 0) + '</span>';
+      html += '</div>';
+      if (tok.deployTxid) html += '<div style="font-size:10px;color:var(--text-dim);font-family:var(--mono);margin-top:6px">' + tok.deployTxid.slice(0, 20) + '...</div>';
+      html += '</div>';
+    }
+    html += '</div>';
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = '<div style="color:var(--accent-red);padding:20px">' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+async function showTokenDetail(tick) {
+  const b = bridgeData.get(selectedBridge);
+  if (!b) return;
+  try {
+    const r = await fetch(b._url + '/token/' + encodeURIComponent(tick), { signal: AbortSignal.timeout(10000) });
+    const tok = await r.json();
+    if (tok.error) { alert(tok.error); return; }
+
+    let body = '<h3 style="margin-bottom:12px;color:var(--text-primary)">' + protocolBadge('op_return', 'bsv-20') + ' ' + escapeHtml(tick) + '</h3>';
+    body += '<div style="display:grid;gap:8px;font-size:13px">';
+    body += '<div class="panel-row"><span class="label">Max Supply</span><span class="value">' + escapeHtml(String(tok.max || '-')) + '</span></div>';
+    body += '<div class="panel-row"><span class="label">Mint Limit</span><span class="value">' + escapeHtml(String(tok.lim || '-')) + '</span></div>';
+    body += '<div class="panel-row"><span class="label">Decimals</span><span class="value">' + (tok.dec != null ? tok.dec : '-') + '</span></div>';
+    body += '<div class="panel-row"><span class="label">Mints</span><span class="value">' + (tok.mintCount || 0) + '</span></div>';
+    if (tok.deployTxid) body += '<div class="panel-row"><span class="label">Deploy Tx</span><span class="value" style="font-size:10px;font-family:var(--mono);word-break:break-all">' + escapeHtml(tok.deployTxid) + '</span></div>';
+    body += '</div>';
+
+    // Balance lookup
+    body += '<div style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px">';
+    body += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">Check balance by address script hash:</div>';
+    body += '<div style="display:flex;gap:8px"><input type="text" id="tokenBalAddr" placeholder="Script hash..." style="flex:1;padding:6px 10px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-family:var(--mono);font-size:12px"><button class="btn sm primary" onclick="checkTokenBalance(\'' + escapeHtml(tick) + '\')">Check</button></div>';
+    body += '<div id="tokenBalResult" style="margin-top:8px;font-size:12px"></div>';
+    body += '</div>';
+
+    openModal(body);
+  } catch (e) {
+    alert('Failed: ' + e.message);
+  }
+}
+
+async function checkTokenBalance(tick) {
+  const b = bridgeData.get(selectedBridge);
+  if (!b) return;
+  const sh = document.getElementById('tokenBalAddr')?.value.trim();
+  const el = document.getElementById('tokenBalResult');
+  if (!sh || !el) return;
+  el.innerHTML = '<span style="color:var(--text-muted)">Checking...</span>';
+  try {
+    const r = await fetch(b._url + '/token/' + encodeURIComponent(tick) + '/balance/' + encodeURIComponent(sh), { signal: AbortSignal.timeout(10000) });
+    const data = await r.json();
+    if (data.error) { el.innerHTML = '<span style="color:var(--accent-red)">' + escapeHtml(data.error) + '</span>'; return; }
+    el.innerHTML = '<span style="color:var(--accent-green);font-weight:600">' + escapeHtml(String(data.balance || 0)) + '</span> <span style="color:var(--text-muted)">' + escapeHtml(tick) + '</span>';
+  } catch (e) {
+    el.innerHTML = '<span style="color:var(--accent-red)">' + escapeHtml(e.message) + '</span>';
   }
 }
 

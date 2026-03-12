@@ -2,7 +2,7 @@
 
 **zcooL**
 
-**February 2026** (Revised: March 11, 2026 — v2: on-chain registry, stake bonds, peer scoring, cryptographic handshake, gossip protocol, protocol parsing. Reframed as open BSV developer infrastructure.)
+**February 2026** (Revised: March 11, 2026 — v3: added indexing layer with tx confirmation tracking, Merkle proof storage, BSV-20 token indexing, content-addressed inscription storage, historical backfill, and price feed. v2: on-chain registry, stake bonds, peer scoring, cryptographic handshake, gossip protocol, protocol parsing. Reframed as open BSV developer infrastructure.)
 
 ---
 
@@ -10,7 +10,7 @@
 
 This paper presents a federated architecture for Simplified Payment Verification (SPV) relay nodes operating on the Bitcoin SV network. The system addresses the fundamental problem facing BSV application developers: the choice between running a full node (expensive, complex) and depending on centralised third-party APIs (single point of failure, someone else's uptime). The relay mesh provides a middle ground -- lightweight bridge nodes that peer with each other over an open, decentralised protocol, using the BSV blockchain itself for peer discovery via an on-chain CBOR registry.
 
-The architecture comprises: (1) a P2P layer speaking native Bitcoin protocol version 70016 over TCP; (2) an SPV client layer managing peer connections, transaction broadcast via `inv`/`getdata`/`tx`, and transaction lookup via `getdata MSG_TX`; (3) a header synchronisation layer downloading and storing all block headers in a dual-indexed LevelDB database; (4) an API layer serving client applications through REST and WebSocket interfaces; (5) a federation layer providing bridge-to-bridge peering with cryptographic identity, on-chain registration, stake bonds, and local peer scoring; and (6) a supervision layer spanning all modules for crash resilience and self-healing.
+The architecture comprises: (1) a P2P layer speaking native Bitcoin protocol version 70016 over TCP; (2) an SPV client layer managing peer connections, transaction broadcast via `inv`/`getdata`/`tx`, and transaction lookup via `getdata MSG_TX`; (3) a header synchronisation layer downloading and storing all block headers in a dual-indexed LevelDB database; (4) an API layer serving client applications through REST and WebSocket interfaces; (5) a federation layer providing bridge-to-bridge peering with cryptographic identity, on-chain registration, stake bonds, and local peer scoring; (6) a supervision layer spanning all modules for crash resilience and self-healing; and (7) an indexing layer providing transaction confirmation tracking, Merkle proof storage, BSV-20 token accounting, content-addressed inscription storage, and historical backfill.
 
 Bridge identity is tied to a BSV keypair. Registration is published on-chain via CBOR-encoded OP_RETURN transactions. Stake bonds lock satoshis to the bridge operator's own address as proof of BSV ownership. Peer scoring -- computed locally by each bridge with no central authority -- weights data accuracy (40%), uptime (30%), response time (20%), and stake age (10%). Peers below a threshold score are auto-disconnected.
 
@@ -68,18 +68,19 @@ This work provided the conceptual blueprint for the federation layer described i
 
 ## 3. Architecture Overview
 
-The system is organised into six distinct layers, each with a dedicated module, protocol, and purpose.
+The system is organised into seven distinct layers, each with a dedicated module, protocol, and purpose.
 
 | Layer | Module | Protocol | Port | Purpose |
 |-------|--------|----------|------|---------|
 | P2P | `bsv-peer.js` | TCP (Bitcoin) | 8333 | Wire-level Bitcoin protocol: binary message framing, checksum validation, handshake |
 | SPV Client | `bsv-node-client.js` | TCP (Bitcoin) | 8333 | Peer management, transaction broadcast via `inv`/`getdata`/`tx`, transaction lookup |
 | Header Sync | (integrated) | TCP (Bitcoin) | 8333 | Block header download, LevelDB dual-index storage (by height and hash) |
+| Indexing | `persistent-store.js` | LevelDB | — | Tx confirmation tracking, Merkle proofs, BSV-20 tokens, CAS inscription storage, backfill |
 | API | `status-server.js` | HTTP, WebSocket | 9333 | REST API, WebSocket interface, operator dashboard |
 | Federation | `handshake.js`, `gossip.js`, `peer-scorer.js`, `registry` | WebSocket, BSV OP_RETURN | 8333 | On-chain registration, cryptographic peering, gossip discovery, local peer scoring |
 | Supervision | (integrated) | — | — | Crash resilience, post-restart recovery |
 
-The layers are ordered by proximity to the Bitcoin network. The P2P layer handles the raw wire protocol. The SPV client manages peer connections and transaction operations. The header sync maintains the complete chain of block headers. The API layer faces outward to application clients. The federation layer provides bridge-to-bridge communication, identity, and trust. The supervision layer ensures crash recovery.
+The layers are ordered by proximity to the Bitcoin network. The P2P layer handles the raw wire protocol. The SPV client manages peer connections and transaction operations. The header sync maintains the complete chain of block headers. The indexing layer tracks transaction lifecycle, stores Merkle proofs, indexes BSV-20 tokens, and manages content-addressed inscription storage. The API layer faces outward to application clients. The federation layer provides bridge-to-bridge communication, identity, and trust. The supervision layer ensures crash recovery.
 
 Each layer is self-contained. A bridge can operate without the federation layer -- it simply has no peers and no mesh resilience. The federation layer can operate without the API layer -- bridges peer and relay transactions without serving external clients. This modularity ensures that partial failures do not cascade.
 
@@ -276,8 +277,15 @@ The API layer exposes HTTP endpoints for bridge operators and client application
 
 - `GET /status` -- Bridge status: pubkey, mesh ID, uptime, peers, headers, mempool
 - `GET /tx/:txid` -- Retrieve a transaction by identifier with full protocol parsing (see Section 12)
+- `GET /tx/:txid/status` -- Transaction lifecycle state (mempool, confirmed, orphaned, dropped)
+- `GET /proof/:txid` -- Merkle proof for confirmed transactions with block context
 - `GET /mempool` -- Current mempool with parsed outputs and protocol badges
 - `GET /inscriptions` -- Query indexed inscriptions by mime type, address, or time range
+- `GET /inscription/:txid/:vout/content` -- Serve raw inscription content with CAS resolution
+- `GET /price` -- Live BSV/USD exchange rate with 60-second cache
+- `GET /tokens` -- List all deployed BSV-20 tokens indexed by the bridge
+- `GET /token/:tick` -- Deploy info for a specific BSV-20 token
+- `GET /token/:tick/balance/:scriptHash` -- Token balance for an owner by script hash
 - `GET /apps` -- Health status of applications running on the bridge
 - `POST /broadcast` -- Broadcast a raw transaction to the Bitcoin network
 
@@ -376,7 +384,13 @@ When a client requests a transaction, the bridge follows a deterministic lookup 
 
 ### 10.4 Confirmation
 
-The bridge's periodic header synchronisation detects new blocks. As described in Section 7 [1], the Merkle tree structure allows the bridge to verify that a transaction is included in a block by checking a Merkle branch against the block header's Merkle root. The bridge reports confirmation count to clients on verification requests.
+The bridge's periodic header synchronisation detects new blocks. As described in Section 7 [1], the Merkle tree structure allows the bridge to verify that a transaction is included in a block by checking a Merkle branch against the block header's Merkle root.
+
+Every transaction the bridge sees is tracked through a lifecycle state machine with four states: `mempool` (seen but unconfirmed), `confirmed` (proven in best chain with Merkle proof), `orphaned` (was confirmed but block disconnected by reorg), and `dropped` (mempool expiry after 14 days). The `txStatus` sublevel stores the authoritative state; the `txBlock` sublevel stores block placement with a reverse index (`block!<blockHash>!tx!<txid>`) that enables efficient rollback during chain reorganisations.
+
+When a reorg occurs, the bridge identifies disconnected blocks via the reverse index, marks all affected transactions as orphaned, and re-enqueues them for confirmation against the new best chain. All rollback operations execute in a single atomic LevelDB `batch()` write to prevent inconsistent state.
+
+Clients query confirmation state via `GET /tx/:txid/status` and retrieve Merkle proofs via `GET /proof/:txid`.
 
 ---
 
@@ -484,11 +498,47 @@ The relay mesh parses BSV transactions beyond simple P2PKH. Every output is type
 
 This parsing enables the dashboard to display protocol badges and decoded data for every transaction, transforming raw hex into human-readable information.
 
+Additionally, every parsed output now includes a `scriptHash` field -- the SHA256 hash of the output's locking script hex. This provides a universal owner identifier that works for P2PKH, P2PK, P2SH, bare scripts, and any locking script type, unlike address-based keying which only works for standard P2PKH outputs.
+
 ---
 
-## 13. Performance
+## 13. Indexing Layer
 
-### 13.1 Production Deployment
+The indexing layer transforms the bridge from a stateless relay into a self-verifying data source. It stores transaction confirmation state, Merkle proofs, BSV-20 token balances, and inscription content -- all anchored to the header chain for reorg safety.
+
+### 13.1 Transaction Confirmation Tracking
+
+Every transaction seen by the bridge is tracked through a lifecycle state machine (Section 10.4). The `txStatus` sublevel stores the authoritative state for each transaction. The `txBlock` sublevel stores block placement with Merkle proofs and a reverse index for efficient reorg rollback.
+
+### 13.2 Content-Addressed Inscription Storage
+
+Inscription content is stored in a content-addressed system keyed by SHA256 hash. Small payloads (< 4 KB) are stored inline in LevelDB; larger payloads are written to the filesystem at `data/content/<first2chars>/<hash>`. The inscription record stores only metadata (content hash, length, MIME type, location pointer), reducing LevelDB compaction pressure and enabling deduplication when the same content appears in multiple transactions.
+
+Content is served via `GET /inscription/:txid/:vout/content` with immutable cache headers (`Cache-Control: public, max-age=31536000, immutable`). The serving path resolves content through the CAS layer, falling back to re-extraction from the raw transaction if the CAS entry is missing.
+
+### 13.3 BSV-20 Token Indexing
+
+The bridge indexes BSV-20 deploy and mint operations. Token indexing operates on **confirmed transactions only** -- mempool token operations are excluded to prevent double-spend corruption of balances.
+
+Token owners are identified by script hash (SHA256 of locking script hex) rather than address, supporting all output types. The state machine enforces BSV-20 rules: first deploy wins (chain-ordered by block height), tick normalisation to lowercase, per-mint amount limits, and supply cap enforcement via BigInt arithmetic.
+
+Every token operation is applied as a single atomic LevelDB `batch()` write: token record update, balance credit, operation log entry, and idempotency marker. Operation keys use zero-padded heights for lexicographic ordering, ensuring deterministic replay. Idempotency markers (`applied!<txid>`) prevent duplicate processing across restarts and backfill reruns.
+
+### 13.4 Historical Backfill
+
+The `relay-bridge backfill` CLI command walks historical blocks from a configured start height to the chain tip. For each block, it fetches the transaction list from WhatsOnChain (one API call per block), then selectively fetches raw transaction data only for transactions matching interest filters (ordinal inscriptions, BSV-20 operations). This avoids fetching entire blocks while still indexing relevant historical data.
+
+Backfill supports resume via a stored `meta.backfill_height` value. Rate limiting (350ms between API calls) prevents upstream throttling. Progress is logged every 100 blocks.
+
+### 13.5 Price Feed
+
+The bridge provides a live BSV/USD exchange rate via `GET /price`, cached in memory with a 60-second TTL. The price is sourced from WhatsOnChain's exchange rate endpoint. This enables applications to display fiat-denominated values without maintaining their own price feed infrastructure.
+
+---
+
+## 14. Performance
+
+### 14.1 Production Deployment
 
 The initial deployment comprises two federation bridge nodes:
 
@@ -499,15 +549,15 @@ The initial deployment comprises two federation bridge nodes:
 
 Both bridges are registered on-chain on mesh `70016` with 1,000,000-satoshi stake bonds. The on-chain registry enables additional bridges to join the mesh without coordination -- register, stake, connect.
 
-### 13.2 Broadcast Performance
+### 14.2 Broadcast Performance
 
 Transaction broadcasts reach 250+ Bitcoin full nodes simultaneously via the P2P layer, covering the vast majority of the reachable BSV network. Inter-bridge relay via WebSocket adds sub-second mesh-wide propagation.
 
-### 13.3 Header Synchronisation
+### 14.3 Header Synchronisation
 
 Initial synchronisation of the full 939,000+ block header chain takes approximately 15-30 minutes. Subsequent synchronisation completes in under one second per new block.
 
-### 13.4 Federation Overhead
+### 14.4 Federation Overhead
 
 | Operation | Cost |
 |-----------|------|
@@ -519,59 +569,67 @@ Initial synchronisation of the full 939,000+ block header chain takes approximat
 
 ---
 
-## 14. Related Work
+## 15. Related Work
 
-### 14.1 The Bitcoin Whitepaper
+### 15.1 The Bitcoin Whitepaper
 
-This system is a direct implementation of the principles described by Nakamoto [1]. Section 8 provides the theoretical foundation for SPV. Section 5 defines the broadcast protocol. Section 7 describes the Merkle tree structure. Section 2 establishes the transaction model. Section 12 establishes crash tolerance.
+This system is a direct implementation of the principles described by Nakamoto [1]. Section 8 provides the theoretical foundation for SPV. Section 5 defines the broadcast protocol. Section 7 describes the Merkle tree structure. Section 2 establishes the transaction model. Section 12 [1] establishes crash tolerance.
 
-### 14.2 Overlay Network Architectures
+### 15.2 Overlay Network Architectures
 
 Wright [3] describes overlay networks built atop the Bitcoin peer-to-peer layer, with attention to structured routing (Pastry DHT), reputation scoring, and eclipse attack resistance. The federation layer described in this paper implements several of the mechanisms Wright described: reputation scoring (peer scorer), node admission (on-chain registry with stake bonds), and cryptographic identity verification (handshake protocol).
 
-### 14.3 Electrum and Similar SPV Systems
+### 15.3 Electrum and Similar SPV Systems
 
 Electrum-style SPV systems use a client-server model where dedicated indexing servers serve SPV clients over a custom protocol. While effective, this model introduces a trusted third party. The relay mesh eliminates this dependency -- bridges connect directly to Bitcoin full nodes and maintain their own header chains.
 
-### 14.4 Centralised Node Providers
+### 15.4 Centralised Node Providers
 
 Ethereum has Infura and Alchemy. Solana has Helius and QuickNode. These services provide API access to blockchain networks without running a full node. They solve the same problem the relay mesh solves -- but through centralisation. One company controls access, pricing, and uptime. The relay mesh achieves the same convenience with decentralised infrastructure. Every developer runs their own bridge.
 
 ---
 
-## 15. Future Work
+## 16. Future Work
 
-### 15.1 Merkle Tree Pruning
+### 16.1 Merkle Tree Pruning
 
 Section 7 of the Bitcoin whitepaper [1] describes reclaiming disk space through Merkle tree pruning. Implementing this would allow long-running bridges to discard old transaction data while retaining verification capability.
 
-### 15.2 Advanced UTXO Management
+### 16.2 Advanced UTXO Management
 
 Pre-splitting UTXOs into parallel chains would enable concurrent broadcast operations without contention, relevant for high-throughput applications.
 
-### 15.3 Pastry DHT Routing
+### 16.3 Pastry DHT Routing
 
 Replacing the current gossip-based discovery with DHT-based routing would reduce the O(n) message cost of announcement flooding to O(log n), enabling the mesh to scale to hundreds of bridges.
 
-### 15.4 Process Supervision
+### 16.4 Process Supervision
 
 Integration with `systemd` would provide automatic restart on crash, making the "rejoin the network at will" principle fully automatic.
 
-### 15.5 Cross-Mesh Isolation
+### 16.5 Cross-Mesh Isolation
 
 The `mesh_id` field in the registration schema supports multiple independent meshes. Cross-mesh peering policies and routing are deferred until demand materialises.
 
-### 15.6 Index Service
+### 16.6 Index Service
 
 When the number of registered bridges exceeds ~50, chain scanning for registry transactions may become slow. An optional index service could cache registry state for faster bootstrap.
 
+### 16.7 BSV-20 Transfer Tracking
+
+The current token indexing supports deploy and mint operations. Transfer tracking -- following token ownership as inscriptions move between outputs -- requires building a UTXO graph for ordinal positions. This is deferred to a future phase.
+
+### 16.8 Full Block Fetching
+
+Historical backfill currently relies on WhatsOnChain for block transaction lists. Adding `MSG_BLOCK` support behind a feature flag would enable fully self-sovereign backfill with no third-party dependency, at the cost of increased bandwidth and storage.
+
 ---
 
-## 16. Conclusion
+## 17. Conclusion
 
 The federated SPV relay mesh transforms isolated SPV nodes into an open, self-governing network. Any BSV developer can run a bridge, register on-chain, and join the mesh -- no permission required, no central authority, no API keys. The protocol uses BSV at every layer: identity (one keypair per bridge), registry (CBOR-encoded OP_RETURN transactions), security (stake bonds locked to the operator's own address), discovery (beacon address scanning and gossip), and trust (local peer scoring based on observed behaviour).
 
-The system is deployed in production with two geographically distributed bridges serving the Indelible platform as a reference implementation. 268 tests verify the protocol implementation. The npm packages are published and install with a single command.
+The system is deployed in production with two geographically distributed bridges serving the Indelible platform as a reference implementation. 383 tests verify the protocol implementation. The npm packages are published and install with a single command.
 
 BSV has the technical capability -- big blocks, cheap fees, native OP_RETURN, powerful script. What it has lacked is developer infrastructure. The relay mesh fills the gap between "run a full node" and "depend on someone else's API."
 

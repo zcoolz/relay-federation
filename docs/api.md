@@ -328,6 +328,163 @@ Health, SSL, and usage data for apps configured on this bridge.
 
 ---
 
+### GET /price
+
+Live BSV/USD exchange rate. Cached in memory with 60-second TTL, sourced from WhatsOnChain.
+
+**Response (200):**
+
+```json
+{
+  "usd": 15.23,
+  "currency": "USD",
+  "source": "whatsonchain",
+  "cached": 1741700000000,
+  "ttl": 60000
+}
+```
+
+**Error (503):** `{ "error": "Price unavailable" }` — upstream fetch failed and no cached value exists.
+
+---
+
+### GET /tx/:txid/status
+
+Transaction lifecycle state. Tracks every transaction the bridge has seen through mempool, confirmation, reorg, and expiry.
+
+**Parameters:**
+- `:txid` — 64-character hex transaction ID
+
+**Response (200):**
+
+```json
+{
+  "txid": "abc123...",
+  "state": "confirmed",
+  "firstSeen": 1741700000000,
+  "lastSeen": 1741700000000,
+  "source": "p2p",
+  "blockHash": "00000000000000000...",
+  "height": 890123,
+  "updatedAt": 1741700060000,
+  "block": {
+    "blockHash": "00000000000000000...",
+    "height": 890123,
+    "proof": { "nodes": ["abc...", "def..."], "index": 3 },
+    "verified": true,
+    "confirmedAt": 1741700060000
+  }
+}
+```
+
+**State values:** `mempool` (seen, unconfirmed), `confirmed` (proven in best chain), `orphaned` (was confirmed, block disconnected by reorg), `dropped` (mempool expiry)
+
+**Error (404):** `{ "error": "Transaction not found" }` — bridge has never seen this txid.
+
+---
+
+### GET /proof/:txid
+
+Merkle proof for a confirmed transaction. Returns the proof nodes and block context needed for SPV verification.
+
+**Parameters:**
+- `:txid` — 64-character hex transaction ID
+
+**Response (200):**
+
+```json
+{
+  "txid": "abc123...",
+  "blockHash": "00000000000000000...",
+  "height": 890123,
+  "proof": {
+    "nodes": ["abc...", "def...", "ghi..."],
+    "index": 3
+  }
+}
+```
+
+**Error (404):** `{ "error": "Proof not available" }` — tx not confirmed or no proof stored.
+
+---
+
+### GET /tokens
+
+List all deployed BSV-20 tokens the bridge has indexed. Confirmed-only — mempool deploys are not included.
+
+**Response (200):**
+
+```json
+{
+  "tokens": [
+    {
+      "tick": "ordi",
+      "max": "21000000",
+      "lim": "1000",
+      "decimals": 0,
+      "totalMinted": "5000",
+      "deployTxid": "abc123...",
+      "deployHeight": 890100,
+      "deployedAt": 1741700000000
+    }
+  ]
+}
+```
+
+---
+
+### GET /token/:tick
+
+Deploy info for a specific BSV-20 token.
+
+**Parameters:**
+- `:tick` — Token ticker (case-insensitive, normalized to lowercase)
+
+**Response (200):**
+
+```json
+{
+  "tick": "ordi",
+  "max": "21000000",
+  "lim": "1000",
+  "decimals": 0,
+  "totalMinted": "5000",
+  "deployTxid": "abc123...",
+  "deployHeight": 890100,
+  "deployedAt": 1741700000000
+}
+```
+
+**Error (404):** `{ "error": "Token not found" }`
+
+---
+
+### GET /token/:tick/balance/:scriptHash
+
+Token balance for a specific owner identified by script hash (SHA256 of locking script hex).
+
+**Parameters:**
+- `:tick` — Token ticker
+- `:scriptHash` — 64-character hex SHA256 hash of the output's locking script
+
+**Response (200):**
+
+```json
+{
+  "tick": "ordi",
+  "ownerScriptHash": "abc123...",
+  "balance": {
+    "confirmed": "1000",
+    "pending": "0",
+    "updatedAt": 1741700000000
+  }
+}
+```
+
+**Why scriptHash?** Addresses only work for P2PKH outputs. Script hash is universal — works for P2PK, P2SH, bare scripts, and any locking script type. The bridge computes `SHA256(lockingScriptHex)` for every output.
+
+---
+
 ### GET /logs
 
 Server-Sent Events (SSE) stream of live bridge logs. Replays the last 500 log entries on connect, then streams new entries in real time.
@@ -495,3 +652,30 @@ Deduplicate and rebuild secondary inscription indexes.
 HTML dashboard with auto-refresh. Tabs: Overview, Mempool, Tx Explorer, Inscriptions, Apps.
 
 Accessible without authentication for read-only view. Operator features (wallet, register, send) require `?auth=<secret>` in the URL.
+
+---
+
+## CLI Commands
+
+### relay-bridge backfill
+
+Walk historical blocks and index inscriptions + BSV-20 token operations.
+
+```bash
+relay-bridge backfill [--from=800000] [--to=890000]
+```
+
+**Flags:**
+| Flag | Default | Description |
+|---|---|---|
+| `--from` | 800000 | Start block height |
+| `--to` | chain tip | End block height |
+
+**Behavior:**
+- Fetches block txid lists from WhatsOnChain (one call per block)
+- Selectively fetches raw tx for txids matching interest filters (ordinals, BSV-20)
+- Indexes inscriptions and token operations with confirmed status
+- Resume support: stores progress in `meta.backfill_height`, restarts where it left off
+- Idempotency: `applied!txid` markers prevent duplicate processing
+- Rate limited: 350ms between WoC API calls
+- Progress logged every 100 blocks

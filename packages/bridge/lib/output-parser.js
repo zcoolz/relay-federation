@@ -1,4 +1,5 @@
 import { Transaction, Hash, PublicKey, P2PKH } from '@bsv/sdk'
+import { createHash } from 'node:crypto'
 
 /**
  * OutputParser — extracts addresses and script info from raw transactions.
@@ -37,6 +38,7 @@ export function parseTx (rawHex) {
       vout,
       satoshis,
       scriptHex,
+      scriptHash: createHash('sha256').update(Buffer.from(scriptHex, 'hex')).digest('hex'),
       hash160: parsed.hash160,
       isP2PKH: parsed.isP2PKH,
       type: parsed.type,

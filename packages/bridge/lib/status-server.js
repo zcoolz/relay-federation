@@ -274,7 +274,7 @@ export class StatusServer {
     try {
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), 5000)
-      const res = await fetch(app.url, { method: 'HEAD', signal: controller.signal, redirect: 'follow' })
+      const res = await fetch(app.healthUrl || app.url, { method: app.healthUrl ? 'GET' : 'HEAD', signal: controller.signal, redirect: 'follow' })
       clearTimeout(timeout)
       statusCode = res.status
       up = statusCode >= 200 && statusCode < 400
@@ -764,6 +764,123 @@ export class StatusServer {
       return
     }
 
+    // GET /price — cached BSV/USD exchange rate
+    if (req.method === 'GET' && path === '/price') {
+      const now = Date.now()
+      if (!this._priceCache || now - this._priceCache.timestamp > 60000) {
+        try {
+          const resp = await fetch('https://api.whatsonchain.com/v1/bsv/main/exchangerate')
+          if (resp.ok) {
+            const data = await resp.json()
+            this._priceCache = { data, timestamp: now }
+          }
+        } catch {}
+      }
+      if (this._priceCache) {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({
+          usd: this._priceCache.data.rate || this._priceCache.data.USD,
+          currency: 'USD',
+          source: 'whatsonchain',
+          cached: this._priceCache.timestamp,
+          ttl: 60000
+        }))
+        return
+      }
+      res.writeHead(503, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Price unavailable' }))
+      return
+    }
+
+    // GET /tokens — list all deployed tokens
+    if (req.method === 'GET' && path === '/tokens') {
+      if (!this._store) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Store not available' }))
+        return
+      }
+      const tokens = await this._store.listTokens()
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ tokens }))
+      return
+    }
+
+    // GET /token/:tick — token deploy info
+    const tokenMatch = path.match(/^\/token\/([^/]+)$/)
+    if (req.method === 'GET' && tokenMatch) {
+      if (!this._store) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Store not available' }))
+        return
+      }
+      const token = await this._store.getToken(decodeURIComponent(tokenMatch[1]))
+      if (!token) {
+        res.writeHead(404, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Token not found' }))
+        return
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(token))
+      return
+    }
+
+    // GET /token/:tick/balance/:scriptHash — token balance for owner
+    const balMatch = path.match(/^\/token\/([^/]+)\/balance\/([0-9a-f]{64})$/)
+    if (req.method === 'GET' && balMatch) {
+      if (!this._store) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Store not available' }))
+        return
+      }
+      const tick = decodeURIComponent(balMatch[1])
+      const ownerScriptHash = balMatch[2]
+      const balance = await this._store.getTokenBalance(tick, ownerScriptHash)
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ tick, ownerScriptHash, balance }))
+      return
+    }
+
+    // GET /tx/:txid/status — tx lifecycle state
+    const statusMatch = path.match(/^\/tx\/([0-9a-f]{64})\/status$/)
+    if (req.method === 'GET' && statusMatch) {
+      if (!this._store) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Store not available' }))
+        return
+      }
+      const txid = statusMatch[1]
+      const status = await this._store.getTxStatus(txid)
+      const block = await this._store.getTxBlock(txid)
+      if (!status) {
+        res.writeHead(404, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Transaction not found' }))
+        return
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ txid, ...status, block: block || undefined }))
+      return
+    }
+
+    // GET /proof/:txid — merkle proof for confirmed tx
+    const proofMatch = path.match(/^\/proof\/([0-9a-f]{64})$/)
+    if (req.method === 'GET' && proofMatch) {
+      if (!this._store) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Store not available' }))
+        return
+      }
+      const txid = proofMatch[1]
+      const block = await this._store.getTxBlock(txid)
+      if (!block || !block.proof) {
+        res.writeHead(404, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Proof not available' }))
+        return
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ txid, blockHash: block.blockHash, height: block.height, proof: block.proof }))
+      return
+    }
+
     // GET /inscription/:txid/:vout/content — serve raw inscription content
     const inscMatch = path.match(/^\/inscription\/([0-9a-f]{64})\/(\d+)\/content$/)
     if (req.method === 'GET' && inscMatch) {
@@ -774,12 +891,21 @@ export class StatusServer {
       }
       try {
         const record = await this._store.getInscription(inscMatch[1], parseInt(inscMatch[2], 10))
-        if (!record || !record.content) {
+        if (!record) {
           res.writeHead(404, { 'Content-Type': 'text/plain' })
           res.end('Not found')
           return
         }
-        const buf = Buffer.from(record.content, 'hex')
+        // Resolve content: inline hex first, then CAS fallback
+        let buf = record.content ? Buffer.from(record.content, 'hex') : null
+        if (!buf && record.contentHash) {
+          buf = await this._store.getContentBytes(record.contentHash)
+        }
+        if (!buf) {
+          res.writeHead(404, { 'Content-Type': 'text/plain' })
+          res.end('Content not available')
+          return
+        }
         res.writeHead(200, {
           'Content-Type': record.contentType || 'application/octet-stream',
           'Content-Length': buf.length,

@@ -40,7 +40,15 @@ export async function initConfig (dir = DEFAULT_DIR) {
     statusSecret: randomBytes(32).toString('hex'),
     maxPeers: 20,
     dataDir: join(dir, 'data'),
-    seedPeers: []
+    seedPeers: [],
+    // apps: [
+    //   {
+    //     name: 'My App',
+    //     url: 'https://myapp.example.com',
+    //     healthUrl: 'http://127.0.0.1:3000',  // optional — local URL for health checks (avoids DNS/TLS loopback timeout)
+    //     bridgeDomain: 'bridge.myapp.example.com'
+    //   }
+    // ]
   }
 
   await mkdir(dir, { recursive: true })

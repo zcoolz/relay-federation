@@ -26,7 +26,7 @@ export async function scanAddress (address, store, onProgress = () => {}) {
   onProgress({ phase: 'discovery', current: 0, total: 0, message: 'Fetching transaction history...' })
 
   const historyUrl = `${WOC_BASE}/address/${address}/history`
-  const histRes = await fetch(historyUrl)
+  const histRes = await fetchWithRetry(historyUrl)
   if (!histRes.ok) {
     throw new Error(`WhatsOnChain returned ${histRes.status} for address history`)
   }
@@ -125,7 +125,7 @@ export async function scanAddress (address, store, onProgress = () => {}) {
 
 /** Fetch raw tx hex from WhatsOnChain. Returns hex string or null on error. */
 async function fetchTxHex (txid) {
-  const res = await fetch(`${WOC_BASE}/tx/${txid}/hex`)
+  const res = await fetchWithRetry(`${WOC_BASE}/tx/${txid}/hex`)
   if (!res.ok) return null
   return res.text()
 }
@@ -155,4 +155,15 @@ async function parseTxAndIndex (txid, rawHex, store) {
 
 function sleep (ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+async function fetchWithRetry (url, maxAttempts = 3) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const res = await fetch(url)
+    if (res.status === 429 && attempt < maxAttempts) {
+      await sleep(1000 * Math.pow(2, attempt - 1))
+      continue
+    }
+    return res
+  }
 }

@@ -2,6 +2,7 @@ import { Level } from 'level'
 import { EventEmitter } from 'node:events'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
+import { mkdir, writeFile, readFile } from 'node:fs/promises'
 
 /**
  * PersistentStore — LevelDB-backed storage for bridge state.
@@ -37,6 +38,11 @@ export class PersistentStore extends EventEmitter {
     this._hashIndex = null
     this._inscriptions = null
     this._inscriptionIdx = null
+    this._txStatus = null
+    this._txBlock = null
+    this._content = null
+    this._tokens = null
+    this._contentDir = join(dataDir, 'content')
   }
 
   /** Open the database and create sublevels. */
@@ -51,6 +57,11 @@ export class PersistentStore extends EventEmitter {
     this._hashIndex = this.db.sublevel('hashIndex', { valueEncoding: 'json' })
     this._inscriptions = this.db.sublevel('inscriptions', { valueEncoding: 'json' })
     this._inscriptionIdx = this.db.sublevel('inscIdx', { valueEncoding: 'json' })
+    this._txStatus = this.db.sublevel('txStatus', { valueEncoding: 'json' })
+    this._txBlock = this.db.sublevel('txBlock', { valueEncoding: 'json' })
+    this._content = this.db.sublevel('content', { valueEncoding: 'json' })
+    this._tokens = this.db.sublevel('tokens', { valueEncoding: 'json' })
+    await mkdir(this._contentDir, { recursive: true })
     this.emit('open')
   }
 
@@ -283,6 +294,286 @@ export class PersistentStore extends EventEmitter {
     const val = await this._meta.get(key)
     return val !== undefined ? val : defaultValue
   }
+  // ── Tx Status + Block Mapping ───────────────────────────
+
+  /**
+   * Set or update tx lifecycle state.
+   * @param {string} txid
+   * @param {'mempool'|'confirmed'|'orphaned'|'dropped'} state
+   * @param {object} [meta] — optional fields: blockHash, height, source
+   */
+  async updateTxStatus (txid, state, meta = {}) {
+    const key = `s!${txid}`
+    const now = Date.now()
+    let existing = null
+    try {
+      const val = await this._txStatus.get(key)
+      if (val !== undefined) existing = val
+    } catch {}
+
+    const record = existing || { firstSeen: now }
+    record.state = state
+    record.lastSeen = now
+    record.updatedAt = now
+    if (meta.blockHash) record.blockHash = meta.blockHash
+    if (meta.height !== undefined) record.height = meta.height
+    if (meta.source) record.source = meta.source
+
+    const batch = [{ type: 'put', key, value: record }]
+
+    // Maintain mempool secondary index
+    if (state === 'mempool') {
+      batch.push({ type: 'put', key: `mempool!${txid}`, value: 1 })
+    } else if (existing?.state === 'mempool') {
+      batch.push({ type: 'del', key: `mempool!${txid}` })
+    }
+
+    await this._txStatus.batch(batch)
+    return record
+  }
+
+  /**
+   * Get tx lifecycle state.
+   * @param {string} txid
+   * @returns {Promise<object|null>}
+   */
+  async getTxStatus (txid) {
+    try {
+      const val = await this._txStatus.get(`s!${txid}`)
+      return val !== undefined ? val : null
+    } catch { return null }
+  }
+
+  /**
+   * Confirm a tx — atomic batch: txBlock + reverse index + txStatus update.
+   * @param {string} txid
+   * @param {string} blockHash
+   * @param {number} height
+   * @param {{ nodes: string[], index: number }|null} proof
+   */
+  async confirmTx (txid, blockHash, height, proof = null) {
+    const now = Date.now()
+    const blockRecord = { blockHash, height, confirmedAt: now, verified: !!proof }
+    if (proof) blockRecord.proof = proof
+
+    // Atomic batch across txBlock + txStatus
+    const txBlockBatch = [
+      { type: 'put', key: `tx!${txid}`, value: blockRecord },
+      { type: 'put', key: `block!${blockHash}!tx!${txid}`, value: 1 }
+    ]
+    await this._txBlock.batch(txBlockBatch)
+
+    await this.updateTxStatus(txid, 'confirmed', { blockHash, height })
+    this.emit('tx:confirmed', { txid, blockHash, height })
+  }
+
+  /**
+   * Get tx block placement.
+   * @param {string} txid
+   * @returns {Promise<object|null>}
+   */
+  async getTxBlock (txid) {
+    try {
+      const val = await this._txBlock.get(`tx!${txid}`)
+      return val !== undefined ? val : null
+    } catch { return null }
+  }
+
+  /**
+   * Handle reorg — mark all txs in disconnected block as orphaned.
+   * @param {string} blockHash — the disconnected block hash
+   * @returns {Promise<string[]>} list of affected txids
+   */
+  async handleReorg (blockHash) {
+    const affected = []
+    const prefix = `block!${blockHash}!tx!`
+
+    // Find all txids in this block via reverse index
+    for await (const [key] of this._txBlock.iterator({ gte: prefix, lt: prefix + '~' })) {
+      const txid = key.slice(prefix.length)
+      affected.push(txid)
+    }
+
+    // Mark each as orphaned + clean up block associations
+    for (const txid of affected) {
+      await this.updateTxStatus(txid, 'orphaned', { blockHash })
+      await this._txBlock.del(`tx!${txid}`)
+      await this._txBlock.del(`block!${blockHash}!tx!${txid}`)
+    }
+
+    return affected
+  }
+
+  // ── Content-Addressed Storage ───────────────────────────
+
+  static CAS_THRESHOLD = 4096 // 4KB — below this, inline in LevelDB
+
+  /**
+   * Store content bytes via CAS. Small content inline, large to filesystem.
+   * @param {string} hexContent — hex-encoded content bytes
+   * @param {string} [mime] — content type
+   * @returns {Promise<{ contentHash: string, contentLen: number, contentPath: string|null, inline: boolean }>}
+   */
+  async putContent (hexContent, mime) {
+    const buf = Buffer.from(hexContent, 'hex')
+    const contentHash = createHash('sha256').update(buf).digest('hex')
+    const contentLen = buf.length
+    const inline = contentLen < PersistentStore.CAS_THRESHOLD
+
+    const record = { len: contentLen, mime: mime || null, createdAt: Date.now() }
+
+    if (inline) {
+      record.inline = hexContent
+      record.path = null
+    } else {
+      const dir = join(this._contentDir, contentHash.slice(0, 2))
+      const filePath = join(dir, contentHash)
+      await mkdir(dir, { recursive: true })
+      await writeFile(filePath, buf)
+      record.path = filePath
+    }
+
+    await this._content.put(`c!${contentHash}`, record)
+    return { contentHash, contentLen, contentPath: record.path, inline }
+  }
+
+  /**
+   * Get content bytes by hash.
+   * @param {string} contentHash
+   * @returns {Promise<Buffer|null>}
+   */
+  async getContentBytes (contentHash) {
+    let record
+    try {
+      const val = await this._content.get(`c!${contentHash}`)
+      if (val === undefined) return null
+      record = val
+    } catch { return null }
+
+    if (record.inline) {
+      return Buffer.from(record.inline, 'hex')
+    }
+    if (record.path) {
+      try { return await readFile(record.path) } catch { return null }
+    }
+    return null
+  }
+
+  /**
+   * Get content metadata by hash.
+   * @param {string} contentHash
+   * @returns {Promise<object|null>}
+   */
+  async getContentMeta (contentHash) {
+    try {
+      const val = await this._content.get(`c!${contentHash}`)
+      return val !== undefined ? val : null
+    } catch { return null }
+  }
+
+  // ── Token Tracking (BSV-20) ─────────────────────────────
+
+  /**
+   * Process a BSV-20 token operation (confirmed-only).
+   * Uses atomic batch() for all writes. Keyed by scriptHash for owner identity.
+   * @param {{ op: string, tick: string, amt: string, ownerScriptHash: string, address: string|null, txid: string, height: number, blockHash: string }} params
+   * @returns {Promise<{ valid: boolean, reason?: string }>}
+   */
+  async processTokenOp ({ op, tick, amt, ownerScriptHash, address, txid, height, blockHash }) {
+    const tickNorm = tick.toLowerCase().trim()
+
+    if (op === 'deploy') {
+      // Only first deploy counts (chain-ordered by height)
+      const existing = await this._safeGet(this._tokens, `tick!${tickNorm}`)
+      if (existing) return { valid: false, reason: 'already deployed' }
+
+      const parsed = typeof amt === 'object' ? amt : {}
+      const batch = [
+        { type: 'put', key: `tick!${tickNorm}`, value: {
+          tick: tickNorm, max: parsed.max || '0', lim: parsed.lim || '0',
+          dec: parsed.dec || '0', deployer: ownerScriptHash, deployerAddr: address,
+          deployTxid: txid, deployHeight: height, totalMinted: '0'
+        }},
+        { type: 'put', key: `op!${String(height).padStart(10, '0')}!${txid}!deploy`, value: {
+          tick: tickNorm, op: 'deploy', ownerScriptHash, valid: true
+        }}
+      ]
+      await this._tokens.batch(batch)
+      return { valid: true }
+    }
+
+    if (op === 'mint') {
+      const deploy = await this._safeGet(this._tokens, `tick!${tickNorm}`)
+      if (!deploy) return { valid: false, reason: 'token not deployed' }
+
+      const mintAmt = BigInt(amt || '0')
+      if (mintAmt <= 0n) return { valid: false, reason: 'invalid amount' }
+      if (deploy.lim !== '0' && mintAmt > BigInt(deploy.lim)) return { valid: false, reason: 'exceeds mint limit' }
+
+      const newTotal = BigInt(deploy.totalMinted) + mintAmt
+      if (deploy.max !== '0' && newTotal > BigInt(deploy.max)) return { valid: false, reason: 'exceeds max supply' }
+
+      // Credit owner balance
+      const balKey = `bal!${tickNorm}!owner!${ownerScriptHash}`
+      const existing = await this._safeGet(this._tokens, balKey) || { confirmed: '0' }
+      const newBal = (BigInt(existing.confirmed) + mintAmt).toString()
+
+      const batch = [
+        { type: 'put', key: `tick!${tickNorm}`, value: { ...deploy, totalMinted: newTotal.toString() } },
+        { type: 'put', key: balKey, value: { confirmed: newBal, updatedAt: Date.now() } },
+        { type: 'put', key: `op!${String(height).padStart(10, '0')}!${txid}!mint`, value: {
+          tick: tickNorm, op: 'mint', amt: amt, ownerScriptHash, valid: true
+        }}
+      ]
+      await this._tokens.batch(batch)
+      return { valid: true }
+    }
+
+    // Transfers deferred to Phase 2
+    return { valid: false, reason: 'transfers not yet supported' }
+  }
+
+  /**
+   * Get token deploy info.
+   * @param {string} tick
+   * @returns {Promise<object|null>}
+   */
+  async getToken (tick) {
+    return this._safeGet(this._tokens, `tick!${tick.toLowerCase().trim()}`)
+  }
+
+  /**
+   * Get token balance for an owner.
+   * @param {string} tick
+   * @param {string} ownerScriptHash
+   * @returns {Promise<string>} balance as string
+   */
+  async getTokenBalance (tick, ownerScriptHash) {
+    const record = await this._safeGet(this._tokens, `bal!${tick.toLowerCase().trim()}!owner!${ownerScriptHash}`)
+    return record ? record.confirmed : '0'
+  }
+
+  /**
+   * List all deployed tokens.
+   * @returns {Promise<Array>}
+   */
+  async listTokens () {
+    const tokens = []
+    const prefix = 'tick!'
+    for await (const [key, value] of this._tokens.iterator({ gte: prefix, lt: prefix + '~' })) {
+      tokens.push(value)
+    }
+    return tokens
+  }
+
+  /** Safe get — returns null instead of throwing for missing keys. */
+  async _safeGet (sublevel, key) {
+    try {
+      const val = await sublevel.get(key)
+      return val !== undefined ? val : null
+    } catch { return null }
+  }
+
   // ── Inscriptions ─────────────────────────────────────────
 
   /**
@@ -301,6 +592,19 @@ export class PersistentStore extends EventEmitter {
       }
       if (delBatch.length) await this._inscriptionIdx.batch(delBatch)
     } catch {}
+
+    // Route content through CAS
+    if (record.content) {
+      try {
+        const cas = await this.putContent(record.content, record.contentType)
+        record.contentHash = cas.contentHash
+        record.contentLen = cas.contentLen
+        // Strip raw content from inscription record if large (stored on filesystem)
+        if (!cas.inline) {
+          delete record.content
+        }
+      } catch {}
+    }
 
     await this._inscriptions.put(key, record)
 

@@ -20,6 +20,9 @@ This document specifies the wire formats, on-chain structures, and peer-to-peer 
 4. [Gossip Protocol](#4-gossip-protocol)
 5. [Peer Scoring](#5-peer-scoring)
 6. [Protocol Parsing](#6-protocol-parsing)
+7. [Transaction Confirmation Model](#7-transaction-confirmation-model)
+8. [Content-Addressed Storage](#8-content-addressed-storage)
+9. [BSV-20 Token State Machine](#9-bsv-20-token-state-machine)
 
 ---
 
@@ -360,6 +363,154 @@ Each output in the parsed transaction includes:
   "parsed": { ... }
 }
 ```
+
+---
+
+## 7. Transaction Confirmation Model
+
+Every transaction the bridge sees is tracked through a lifecycle state machine. This is foundational — token balances, proofs, and backfill all depend on it.
+
+### States
+
+| State | Meaning |
+|---|---|
+| `mempool` | Seen via P2P or broadcast, not yet proven in best chain |
+| `confirmed` | Has best-chain block association + merkle proof verified against stored header |
+| `orphaned` | Was confirmed, but block disconnected by chain reorg |
+| `dropped` | Mempool tx aged out / never confirmed (optional, after 14 days) |
+
+### State Transitions
+
+```
+tx:new event ──→ mempool
+                    │
+     merkle proof ──→ confirmed
+                    │       │
+                    │   reorg ──→ orphaned
+                    │               │
+                    │    re-prove ──→ confirmed (new block)
+                    │
+        14d expiry ──→ dropped
+```
+
+### Storage (LevelDB Sublevels)
+
+**txStatus** — authoritative lifecycle:
+
+| Key | Value |
+|---|---|
+| `s!<txid>` | `{ state, firstSeen, lastSeen, source, blockHash?, height?, updatedAt }` |
+| `mempool!<txid>` | `1` (secondary index for fast scans) |
+
+**txBlock** — block placement + reverse index:
+
+| Key | Value |
+|---|---|
+| `tx!<txid>` | `{ blockHash, height, proof: {nodes[], index}, verified, confirmedAt }` |
+| `block!<blockHash>!tx!<txid>` | `1` (reverse index for reorg rollback) |
+
+### Reorg Handling
+
+When the best chain changes, the bridge identifies disconnected blocks and reverses confirmations:
+
+1. Look up `block!<blockHash>!tx!*` reverse index to find affected txids
+2. Mark each txid as `orphaned` in txStatus
+3. Delete txBlock association
+4. Re-enqueue txid for confirmation against new best chain
+
+All rollback operations are executed in a single atomic `batch()` write.
+
+---
+
+## 8. Content-Addressed Storage
+
+Inscription content is stored in a content-addressed system keyed by SHA256 hash. This prevents duplication and reduces LevelDB compaction pressure for large payloads.
+
+### Size Threshold
+
+| Size | Storage |
+|---|---|
+| < 4 KB | Inline in LevelDB (base64 in `content` sublevel) |
+| >= 4 KB | Filesystem at `data/content/<first2chars>/<hash>` |
+
+### LevelDB Schema
+
+**content sublevel:**
+
+| Key | Value |
+|---|---|
+| `c!<contentHash>` | `{ len, mime, path, inline?: <base64>, createdAt }` |
+
+### Flow
+
+1. Inscription arrives (via `tx:new` or backfill)
+2. Raw content hex → SHA256 hash
+3. If hash already exists in content sublevel → skip (deduplicated)
+4. If < 4 KB → store inline as base64 in LevelDB value
+5. If >= 4 KB → write to filesystem, store path in LevelDB
+6. Inscription record stores `contentHash` + `contentLen` instead of raw bytes
+
+### HTTP Serving
+
+`GET /inscription/:txid/:vout/content` resolves content via:
+1. Read inscription record → get `contentHash`
+2. Read content sublevel → get location (inline or filesystem path)
+3. Serve with `Content-Type` from inscription mime
+4. Cache headers: `Cache-Control: public, max-age=31536000, immutable`
+
+---
+
+## 9. BSV-20 Token State Machine
+
+The bridge indexes BSV-20 deploy and mint operations. **Confirmed-only** — mempool token operations are not indexed to prevent double-spend corruption.
+
+### Owner Identity
+
+Token owners are identified by **scriptHash** — SHA256 of the output's locking script hex. This is universal:
+
+| Script Type | Address? | scriptHash? |
+|---|---|---|
+| P2PKH | Yes | Yes |
+| P2PK | No standard address | Yes |
+| P2SH | Yes | Yes |
+| Bare script | No | Yes |
+
+### Operations
+
+**Deploy** — creates a new token:
+- First deploy for a tick wins (chain-ordered by block height)
+- Tick normalized to lowercase
+- Stores: `tick`, `max` (supply cap), `lim` (per-mint limit), `decimals`
+
+**Mint** — credits tokens to an owner:
+- Validates tick is deployed
+- Validates amount <= `lim` (per-mint limit)
+- Validates `totalMinted + amount <= max` (supply cap)
+- Credits `ownerScriptHash` balance atomically
+
+**Transfers** — deferred to Phase 2 (requires UTXO graph tracking).
+
+### LevelDB Schema
+
+**tokens sublevel:**
+
+| Key | Value |
+|---|---|
+| `tick!<TICK>` | `{ max, lim, decimals, totalMinted, deployTxid, deployHeight, deployedAt }` |
+| `bal!<TICK>!owner!<scriptHash>` | `{ confirmed: {amt}, pending: {amt}, updatedAt }` |
+| `op!<height>!<txid>!<opIndex>` | `{ tick, op, ownerScriptHash, amt, valid, reason? }` |
+| `applied!<txid>` | `{ height, blockHash }` (idempotency marker) |
+
+### Atomicity
+
+Every token operation (deploy or mint) is applied as a single LevelDB `batch()`:
+- Token record update + balance update + operation log + idempotency marker
+- If the process crashes mid-write, the batch either fully applies or doesn't
+- On restart, `applied!<txid>` markers prevent duplicate processing
+
+### Chain Ordering
+
+Operation keys use zero-padded heights (`0000890123`) for lexicographic ordering. This ensures deterministic replay — if two deploys compete for the same tick, the one at the lower height wins.
 
 ---
 

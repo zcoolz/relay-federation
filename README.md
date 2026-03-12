@@ -12,7 +12,7 @@ A federated mesh network for BSV. Each bridge is a lightweight SPV node that syn
 - **Price feed** — live BSV/USD from CoinGecko
 - **Federation mesh** — bridges discover and verify each other via on-chain stake bonds
 - **Operator dashboard** — glassmorphism UI with Overview, Mempool, Explorer, Inscriptions, Tokens, and Apps tabs
-- **383 tests passing** — MIT license
+- **291 tests passing** — MIT license
 
 ## Packages
 
@@ -240,7 +240,7 @@ git clone https://github.com/zcoolz/relay-federation.git
 cd relay-federation
 npm install
 
-# Run bridge tests (383 tests)
+# Run bridge tests (291 tests)
 npm test --workspace=packages/bridge
 ```
 

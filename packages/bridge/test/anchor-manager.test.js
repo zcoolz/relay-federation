@@ -4,9 +4,9 @@ import { EventEmitter } from 'node:events'
 import { AnchorManager } from '../lib/anchor-manager.js'
 import { PeerScorer } from '../lib/peer-scorer.js'
 
-const ANCHOR_1 = { pubkeyHex: 'aa'.repeat(33), endpoint: 'wss://b1.relay.indelible.one:8333' }
-const ANCHOR_2 = { pubkeyHex: 'bb'.repeat(33), endpoint: 'wss://b2.relay.indelible.one:8333' }
-const ANCHOR_3 = { pubkeyHex: 'cc'.repeat(33), endpoint: 'wss://b3.relay.indelible.one:8333' }
+const ANCHOR_1 = { pubkeyHex: 'aa'.repeat(33), endpoint: 'wss://bridge-1.example.com:8333' }
+const ANCHOR_2 = { pubkeyHex: 'bb'.repeat(33), endpoint: 'wss://bridge-2.example.com:8333' }
+const ANCHOR_3 = { pubkeyHex: 'cc'.repeat(33), endpoint: 'wss://bridge-3.example.com:8333' }
 const REGULAR_PEER = { pubkeyHex: 'dd'.repeat(33), endpoint: 'wss://some-bridge.com:8333' }
 
 function createMockPeerManager () {

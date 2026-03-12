@@ -29,7 +29,7 @@ function fakeConn (pubkeyHex) {
 }
 
 // Build a signed announce message
-function buildAnnounce (privKey, pubkeyHex, endpoint, meshId = 'indelible', timestamp = Date.now()) {
+function buildAnnounce (privKey, pubkeyHex, endpoint, meshId = '70016', timestamp = Date.now()) {
   const payload = `${pubkeyHex}:${endpoint}:${meshId}:${timestamp}`
   const dataHex = Buffer.from(payload, 'utf8').toString('hex')
   const signature = signHash(dataHex, privKey)
@@ -125,7 +125,7 @@ describe('GossipManager', () => {
       message: {
         type: 'peers',
         peers: [
-          { pubkeyHex: 'new_peer', endpoint: 'wss://new:8333', meshId: 'indelible' }
+          { pubkeyHex: 'new_peer', endpoint: 'wss://new:8333', meshId: '70016' }
         ]
       }
     })
@@ -245,7 +245,7 @@ describe('GossipManager', () => {
     const peerKey = PrivateKey.fromRandom()
     const peerPub = peerKey.toPublicKey().toString()
     const staleTime = Date.now() - 120000 // 2 min ago, maxAge is 1 min
-    const announce = buildAnnounce(peerKey, peerPub, 'wss://peer:8333', 'indelible', staleTime)
+    const announce = buildAnnounce(peerKey, peerPub, 'wss://peer:8333', '70016', staleTime)
 
     let discovered = false
     gossip.on('peer:discovered', () => { discovered = true })

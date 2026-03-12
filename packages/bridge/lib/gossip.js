@@ -26,7 +26,7 @@ export class GossipManager extends EventEmitter {
    * @param {import('@bsv/sdk').PrivateKey} opts.privKey — Bridge private key for signing
    * @param {string} opts.pubkeyHex — Our compressed pubkey hex
    * @param {string} opts.endpoint — Our advertised WSS endpoint
-   * @param {string} [opts.meshId='indelible'] — Mesh identifier
+   * @param {string} [opts.meshId='70016'] — Mesh identifier
    * @param {number} [opts.announceIntervalMs=60000] — Re-announce interval
    * @param {number} [opts.maxAge=300000] — Max age for announcements (5 min)
    * @param {number} [opts.maxPeersResponse=50] — Max peers in a response

@@ -35,7 +35,7 @@ function createMockTxRelay () {
 const TEST_CONFIG = {
   pubkeyHex: 'aa'.repeat(33),
   endpoint: 'wss://test-bridge.example.com:8333',
-  meshId: 'indelible'
+  meshId: '70016'
 }
 
 // Use a different port for each test to avoid EADDRINUSE

@@ -777,7 +777,7 @@ async function cmdStart () {
   })
 
   peerManager.on('peer:disconnect', ({ pubkeyHex }) => {
-    const msg = `Peer disconnected: ${pubkeyHex.slice(0, 16)}...`
+    const msg = `Peer disconnected: ${pubkeyHex ? pubkeyHex.slice(0, 16) + '...' : 'unknown'}`
     console.log(msg)
     statusServer.addLog(msg)
   })

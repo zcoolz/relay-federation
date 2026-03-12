@@ -320,9 +320,10 @@ async function cmdStart () {
   })
 
   // Wire peer health tracking
-  peerManager.on('peer:connect', ({ pubkeyHex }) => {
+  peerManager.on('peer:connect', ({ pubkeyHex, endpoint }) => {
     peerHealth.recordSeen(pubkeyHex)
     scorer.setStakeAge(pubkeyHex, 7)
+    if (endpoint) gossipManager.addSeed({ pubkeyHex, endpoint, meshId: config.meshId })
   })
 
   peerManager.on('peer:disconnect', ({ pubkeyHex }) => {
@@ -429,6 +430,8 @@ async function cmdStart () {
   // ── 4b. Beacon address watcher — detect on-chain registrations ──
   const { extractOpReturnData, decodePayload, PROTOCOL_PREFIX } = await import('../registry/lib/cbor.js')
   const { Transaction: BsvTx } = await import('@bsv/sdk')
+
+  // Registry bootstrapped via discoverNewPeers() after server start (no WoC dependency)
 
   watcher.on('utxo:received', async ({ txid, hash160 }) => {
     if (hash160 !== beaconHash160) return
@@ -641,14 +644,17 @@ async function cmdStart () {
   let gossipStarted = false
 
   // Start gossip after first peer connection completes.
-  // With crypto handshake, peer:connect fires AFTER handshake verification,
-  // so gossip won't race the handshake anymore.
+  // Delay 5s so all seed handshakes finish before gossip broadcasts
+  // (immediate broadcast would send announce/getpeers through connections
+  // whose inbound side is still waiting for verify — breaking the handshake).
   peerManager.on('peer:connect', () => {
     if (!gossipStarted) {
       gossipStarted = true
-      gossipManager.start()
-      gossipManager.requestPeersFromAll()
-      console.log('Gossip started')
+      setTimeout(() => {
+        gossipManager.start()
+        gossipManager.requestPeersFromAll()
+        console.log('Gossip started')
+      }, 5000)
 
       // Periodic peer refresh — re-request peer lists every 10 minutes
       // Catches registrations missed during downtime or initial gossip
@@ -703,6 +709,7 @@ async function cmdStart () {
     // Connect to seed peers (accept both string URLs and {pubkeyHex, endpoint} objects)
     console.log(`Connecting to ${seedPeers.length} seed peer(s)...`)
     for (let i = 0; i < seedPeers.length; i++) {
+      if (i > 0) await new Promise(r => setTimeout(r, 2000)) // stagger to avoid handshake races
       const seed = seedPeers[i]
       const endpoint = typeof seed === 'string' ? seed : seed.endpoint
       const pubkey = typeof seed === 'string' ? `seed_${i}` : seed.pubkeyHex
@@ -769,6 +776,47 @@ async function cmdStart () {
   await statusServer.start()
   statusServer.startAppMonitoring()
   console.log(`  Status: http://127.0.0.1:${statusPort}/status`)
+
+  // ── Peer discovery — bootstrap registry from seed peers, then periodic refresh ──
+  const knownEndpoints = new Set()
+  for (const sp of (config.seedPeers || [])) knownEndpoints.add(sp.endpoint)
+  knownEndpoints.add(config.endpoint)
+
+  async function discoverNewPeers () {
+    const peersToQuery = [...(config.seedPeers || [])]
+    for (const [, conn] of peerManager.peers) {
+      if (conn.endpoint && conn.readyState === 1) peersToQuery.push({ endpoint: conn.endpoint })
+    }
+    for (const peer of peersToQuery) {
+      try {
+        const ep = peer.endpoint || ''
+        const u = new URL(ep)
+        const statusUrl = 'http://' + u.hostname + ':' + (parseInt(u.port, 10) + 1000) + '/discover'
+        const res = await fetch(statusUrl, { signal: AbortSignal.timeout(5000) })
+        if (!res.ok) continue
+        const data = await res.json()
+        if (!data.bridges) continue
+        for (const b of data.bridges) {
+          if (!b.endpoint) continue
+          if (b.pubkeyHex) registeredPubkeys.add(b.pubkeyHex)
+          seedEndpoints.add(b.endpoint)
+          if (knownEndpoints.has(b.endpoint)) continue
+          knownEndpoints.add(b.endpoint)
+          const conn = peerManager.connectToPeer({ endpoint: b.endpoint, pubkeyHex: b.pubkeyHex })
+          if (conn) {
+            conn.on('open', () => performOutboundHandshake(conn))
+            const msg = `Discovered new peer: ${b.name || b.pubkeyHex?.slice(0, 16) || b.endpoint}`
+            console.log(msg)
+            statusServer.addLog(msg)
+          }
+        }
+      } catch {}
+    }
+  }
+  await discoverNewPeers()
+  console.log(`  Registry: ${registeredPubkeys.size} trusted pubkeys after peer discovery`)
+  setTimeout(discoverNewPeers, 5000)
+  setInterval(discoverNewPeers, 300000)
 
   // ── 9. Log events (dual: console + status server ring buffer) ──
   peerManager.on('peer:connect', ({ pubkeyHex }) => {

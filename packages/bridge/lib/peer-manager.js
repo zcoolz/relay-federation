@@ -169,7 +169,7 @@ export class PeerManager extends EventEmitter {
             // If cryptographic handshake is available, use it
             if (opts.handshake && msg.nonce && Array.isArray(msg.versions)) {
               const isSeed = opts.seedEndpoints && opts.seedEndpoints.has(msg.endpoint)
-              const result = opts.handshake.handleHello(msg, isSeed ? null : (opts.registeredPubkeys || null))
+              const result = opts.handshake.handleHello(msg, null) // cryptographic handshake is the security layer — no whitelist gate
               if (result.error) {
                 ws.send(JSON.stringify({ type: 'error', error: result.error }))
                 ws.close()

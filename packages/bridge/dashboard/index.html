@@ -954,6 +954,7 @@ function fmtHeight(n) { return n > 0 ? n.toLocaleString() : '-'; }
 function isOperator(url) { return !!operatorTokens[url]; }
 function getAuthParam(url) { const t = operatorTokens[url]; return t ? '?auth=' + encodeURIComponent(t) : ''; }
 function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function hexToBase64(hex) { const bytes = new Uint8Array(hex.match(/.{1,2}/g).map(b => parseInt(b, 16))); let bin = ''; for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]); return btoa(bin); }
 function protocolBadge(type, protocol) {
   const label = protocol || type || 'unknown';
   const cls = label.replace(/_/g, '-');
@@ -1667,8 +1668,9 @@ function renderParsedData(type, protocol, parsed, txid, vout) {
   } else if (protocol === 'ordinal') {
     html += 'Type: <span class="val">' + escapeHtml(parsed.contentType || '-') + '</span>';
     if (parsed.content) html += ' &middot; Size: <span class="val">' + (parsed.content.length / 2) + ' bytes</span>';
-    if (txid !== undefined && vout !== undefined && parsed.contentType && parsed.contentType.startsWith('image/')) {
-      html += '</div><div style="margin-top:8px"><img src="/inscription/' + encodeURIComponent(txid) + '/' + vout + '/content" style="max-width:100%;max-height:320px;border-radius:var(--radius-sm);border:1px solid var(--border)" loading="lazy" alt="inscription">';
+    if (parsed.content && parsed.contentType && parsed.contentType.startsWith('image/')) {
+      const b64 = hexToBase64(parsed.content);
+      html += '</div><div style="margin-top:8px"><img src="data:' + escapeHtml(parsed.contentType) + ';base64,' + b64 + '" style="max-width:100%;max-height:320px;border-radius:var(--radius-sm);border:1px solid var(--border)" alt="inscription">';
     }
   } else if (type === 'p2sh') {
     html += 'Script hash: <span class="val" style="font-family:var(--mono)">' + (parsed.scriptHash || '-') + '</span>';

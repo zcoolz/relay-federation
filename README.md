@@ -53,23 +53,20 @@ See the [SDK README](packages/sdk/README.md) for full API.
 ### For bridge operators (CLI)
 
 ```bash
-# Install
+# 1. Install
 npm install -g @relay-federation/bridge
 
-# Generate identity and config
+# 2. Generate identity and config (auto-detects your IP)
 relay-bridge init
 
-# Edit config — set your endpoint
-# ~/.relay-bridge/config.json
-
-# Fund your bridge — send BSV to the address shown by init
-# Then import the funding tx (get raw hex from your wallet or block explorer)
+# 3. Fund your bridge — send BSV to the address shown by init
+#    Then import the funding tx (get raw hex from your wallet or block explorer)
 relay-bridge fund <rawTxHex>
 
-# Register on-chain — creates stake bond + publishes registration tx
+# 4. Register on-chain — creates stake bond + publishes registration tx
 relay-bridge register
 
-# Start the bridge
+# 5. Start the bridge
 relay-bridge start
 ```
 
@@ -77,7 +74,7 @@ relay-bridge start
 
 | Command | Description |
 |---------|-------------|
-| `relay-bridge init` | Generate a fresh keypair and config file at `~/.relay-bridge/config.json` |
+| `relay-bridge init` | Generate keypair, auto-detect IP, create config at `~/.relay-bridge/config.json` |
 | `relay-bridge start` | Start the bridge server — listens for peers, syncs headers, relays transactions |
 | `relay-bridge start ws://host:port` | Start and connect to a specific peer |
 | `relay-bridge status` | Show running bridge status — peers, headers, mempool |

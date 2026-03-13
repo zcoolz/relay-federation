@@ -559,7 +559,7 @@ export class StatusServer {
       }
 
       try {
-        // Fetch block info from WoC (includes txids in response)
+        // Fetch block info from WoC (includes first 100 txids + pagination info)
         const blockUrl = blockHash
           ? `https://api.whatsonchain.com/v1/bsv/main/block/hash/${blockHash}`
           : `https://api.whatsonchain.com/v1/bsv/main/block/height/${height}`
@@ -572,15 +572,32 @@ export class StatusServer {
         }
 
         const blockData = await resp.json()
+        const hash = blockData.hash
 
-        // WoC returns tx array with txids in the block info response
-        const txids = blockData.tx || []
+        // Start with first 100 txids from block info
+        let txids = blockData.tx || []
+        const totalTxCount = blockData.txcount || blockData.num_tx || txids.length
+
+        // If there are more txids, fetch additional pages
+        // WoC uses pages of 50,000 txids each, starting at page 1
+        if (blockData.pages && blockData.pages.uri && blockData.pages.uri.length > 0) {
+          for (const pageUri of blockData.pages.uri) {
+            const pageResp = await fetch(`https://api.whatsonchain.com/v1/bsv/main${pageUri}`)
+            if (pageResp.ok) {
+              const pageData = await pageResp.json()
+              if (Array.isArray(pageData)) {
+                txids = txids.concat(pageData)
+              }
+            }
+          }
+        }
 
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({
           height: blockData.height,
-          hash: blockData.hash,
+          hash,
           txCount: txids.length,
+          totalTxCount,
           txids,
           source: 'woc' // Will change to 'p2p' when MSG_BLOCK is implemented
         }))

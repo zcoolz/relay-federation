@@ -6,16 +6,23 @@ import { fileURLToPath } from 'node:url'
 import https from 'node:https'
 import { parseTx } from './output-parser.js'
 import { scanAddress } from './address-scanner.js'
+import { handlePostData, handleGetTopics, handleGetData } from './data-endpoints.js'
 
 /**
- * StatusServer — localhost-only HTTP server exposing bridge status.
+ * StatusServer — public-facing HTTP server exposing bridge status and APIs.
  *
  * Started by `relay-bridge start`, queried by `relay-bridge status`.
- * Binds to 127.0.0.1 only — not accessible from outside the machine.
+ * Binds to 0.0.0.0 — accessible from outside the machine.
+ * Operator-only endpoints are gated by statusSecret authentication.
  *
  * Endpoints:
- *   GET /       — HTML dashboard (auto-refreshes every 5s)
- *   GET /status — JSON object with bridge state
+ *   GET  /             — HTML dashboard (auto-refreshes every 5s)
+ *   GET  /status       — JSON object with bridge state
+ *   GET  /discover     — Known bridges in the mesh
+ *   POST /broadcast    — Relay a raw transaction
+ *   POST /data         — Submit a signed data envelope
+ *   GET  /data/topics  — List topics with cached data
+ *   GET  /data/:topic  — Query cached envelopes by topic
  */
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -36,6 +43,7 @@ export class StatusServer {
     this._peerManager = opts.peerManager || null
     this._headerRelay = opts.headerRelay || null
     this._txRelay = opts.txRelay || null
+    this._dataRelay = opts.dataRelay || null
     this._config = opts.config || {}
     this._scorer = opts.scorer || null
     this._peerHealth = opts.peerHealth || null
@@ -476,6 +484,53 @@ export class StatusServer {
       const sent = this._txRelay ? this._txRelay.broadcastTx(txid, rawHex) : 0
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ txid, peers: sent }))
+      return
+    }
+
+    // POST /data — submit a signed data envelope for relay
+    if (req.method === 'POST' && path === '/data') {
+      if (!this._dataRelay) {
+        res.writeHead(503, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Data relay not available' }))
+        return
+      }
+      let body
+      try {
+        body = await this._readBody(req)
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'invalid_json' }))
+        return
+      }
+      handlePostData(this._dataRelay, body, res)
+      return
+    }
+
+    // GET /data/topics — list topics with summary objects
+    if (req.method === 'GET' && path === '/data/topics') {
+      if (!this._dataRelay) {
+        res.writeHead(503, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Data relay not available' }))
+        return
+      }
+      handleGetTopics(this._dataRelay, res)
+      return
+    }
+
+    // GET /data/:topic — query cached envelopes with since/limit/hasMore
+    if (req.method === 'GET' && path.startsWith('/data/')) {
+      if (!this._dataRelay) {
+        res.writeHead(503, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Data relay not available' }))
+        return
+      }
+      const topic = decodeURIComponent(path.slice(6))
+      if (!topic) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Topic required' }))
+        return
+      }
+      handleGetData(this._dataRelay, topic, url.searchParams, res)
       return
     }
 

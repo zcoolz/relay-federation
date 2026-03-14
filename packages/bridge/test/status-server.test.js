@@ -1,6 +1,8 @@
 import { describe, it, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
+import { PrivateKey } from '@bsv/sdk'
+import { signHash } from '@relay-federation/common/crypto'
 import { StatusServer } from '../lib/status-server.js'
 
 function createMockPeerManager () {
@@ -229,5 +231,210 @@ describe('StatusServer', () => {
 
     assert.equal((await server.getStatus()).headers.bestHeight, 500)
     assert.equal((await server.getStatus()).headers.count, 1)
+  })
+})
+
+// --- Data relay HTTP endpoints ---
+
+function buildSignedEnvelope (opts = {}) {
+  const priv = opts.privKey || PrivateKey.fromRandom()
+  const pub = priv.toPublicKey().toString()
+  const topic = opts.topic || 'oracle:rates:bsv'
+  const payload = opts.payload || '{"USD":42.50}'
+  const timestamp = opts.timestamp || Math.floor(Date.now() / 1000)
+  const ttl = opts.ttl || 300
+  const preimage = `${topic}${payload}${timestamp}${ttl}`
+  const dataHex = Buffer.from(preimage, 'utf8').toString('hex')
+  const signature = signHash(dataHex, priv)
+  return { topic, payload, pubkeyHex: pub, timestamp, ttl, signature }
+}
+
+function createMockDataRelay () {
+  const buffers = new Map()
+  return {
+    injectEnvelope (env) {
+      if (!env.topic || !env.signature) return { accepted: false, error: 'missing_fields' }
+      let buf = buffers.get(env.topic)
+      if (!buf) { buf = []; buffers.set(env.topic, buf) }
+      buf.push(env)
+      return { accepted: true }
+    },
+    getEnvelopes (topic) { return buffers.get(topic) || [] },
+    queryEnvelopes (topic, opts = {}) {
+      const since = opts.since || 0
+      const limit = Math.min(Math.max(opts.limit ?? 10, 1), 100)
+      const all = buffers.get(topic) || []
+      const filtered = since > 0 ? all.filter(e => e.timestamp > since) : all
+      return { envelopes: filtered.slice(0, limit), hasMore: filtered.length > limit }
+    },
+    getTopics () { return [...buffers.keys()] },
+    getTopicSummaries () {
+      const summaries = []
+      for (const [topic, buf] of buffers) {
+        if (buf.length > 0) {
+          summaries.push({
+            topic,
+            count: buf.length,
+            latestTimestamp: Math.max(...buf.map(e => e.timestamp))
+          })
+        }
+      }
+      return summaries
+    },
+    _buffers: buffers
+  }
+}
+
+describe('StatusServer data endpoints', () => {
+  let server
+  let portCounter = 29333
+
+  afterEach(async () => {
+    if (server) {
+      await server.stop()
+      server = null
+    }
+  })
+
+  it('POST /data accepts valid envelope', async () => {
+    const port = portCounter++
+    const dr = createMockDataRelay()
+    server = new StatusServer({ port, dataRelay: dr, config: TEST_CONFIG })
+    await server.start()
+
+    const env = buildSignedEnvelope()
+    const res = await fetch(`http://127.0.0.1:${port}/data`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(env)
+    })
+    assert.equal(res.status, 200)
+    const body = await res.json()
+    assert.equal(body.accepted, true)
+    assert.equal(body.topic, 'oracle:rates:bsv')
+  })
+
+  it('POST /data returns 400 for missing fields', async () => {
+    const port = portCounter++
+    const dr = createMockDataRelay()
+    server = new StatusServer({ port, dataRelay: dr, config: TEST_CONFIG })
+    await server.start()
+
+    const res = await fetch(`http://127.0.0.1:${port}/data`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topic: 'test' })
+    })
+    assert.equal(res.status, 400)
+    const body = await res.json()
+    assert.equal(body.error, 'missing_fields')
+  })
+
+  it('GET /data/:topic returns cached envelopes with hasMore', async () => {
+    const port = portCounter++
+    const dr = createMockDataRelay()
+    server = new StatusServer({ port, dataRelay: dr, config: TEST_CONFIG })
+    await server.start()
+
+    const env = buildSignedEnvelope()
+    dr.injectEnvelope({ ...env, type: 'data' })
+
+    const res = await fetch(`http://127.0.0.1:${port}/data/oracle:rates:bsv`)
+    assert.equal(res.status, 200)
+    const body = await res.json()
+    assert.equal(body.topic, 'oracle:rates:bsv')
+    assert.equal(body.count, 1)
+    assert.equal(body.envelopes.length, 1)
+    assert.equal(body.hasMore, false)
+  })
+
+  it('GET /data/:topic respects since and limit query params', async () => {
+    const port = portCounter++
+    const dr = createMockDataRelay()
+    server = new StatusServer({ port, dataRelay: dr, config: TEST_CONFIG })
+    await server.start()
+
+    const now = Math.floor(Date.now() / 1000)
+    dr.injectEnvelope({ ...buildSignedEnvelope({ timestamp: now - 60 }), type: 'data' })
+    dr.injectEnvelope({ ...buildSignedEnvelope({ payload: '{"USD":43}', timestamp: now }), type: 'data' })
+
+    // since filters to only the newer one
+    const res = await fetch(`http://127.0.0.1:${port}/data/oracle:rates:bsv?since=${now - 30}&limit=10`)
+    assert.equal(res.status, 200)
+    const body = await res.json()
+    assert.equal(body.count, 1)
+    assert.equal(body.hasMore, false)
+  })
+
+  it('GET /data/:topic clamps limit=0 and limit=-1 at HTTP layer', async () => {
+    const port = portCounter++
+    const dr = createMockDataRelay()
+    server = new StatusServer({ port, dataRelay: dr, config: TEST_CONFIG })
+    await server.start()
+
+    const now = Math.floor(Date.now() / 1000)
+    dr.injectEnvelope({ ...buildSignedEnvelope({ payload: '{"a":1}', timestamp: now - 1 }), type: 'data' })
+    dr.injectEnvelope({ ...buildSignedEnvelope({ payload: '{"a":2}', timestamp: now }), type: 'data' })
+
+    // limit=0 should clamp to 1, not default to 10
+    const res0 = await fetch(`http://127.0.0.1:${port}/data/oracle:rates:bsv?limit=0`)
+    const body0 = await res0.json()
+    assert.equal(body0.count, 1, 'limit=0 should clamp to 1')
+    assert.equal(body0.hasMore, true)
+
+    // limit=-1 should also clamp to 1
+    const resNeg = await fetch(`http://127.0.0.1:${port}/data/oracle:rates:bsv?limit=-1`)
+    const bodyNeg = await resNeg.json()
+    assert.equal(bodyNeg.count, 1, 'limit=-1 should clamp to 1')
+    assert.equal(bodyNeg.hasMore, true)
+  })
+
+  it('GET /data/:topic returns 404 for uncached topic', async () => {
+    const port = portCounter++
+    const dr = createMockDataRelay()
+    server = new StatusServer({ port, dataRelay: dr, config: TEST_CONFIG })
+    await server.start()
+
+    const res = await fetch(`http://127.0.0.1:${port}/data/nonexistent:topic`)
+    assert.equal(res.status, 404)
+    const body = await res.json()
+    assert.equal(body.count, 0)
+    assert.equal(body.hasMore, false)
+  })
+
+  it('GET /data/topics returns topic summary objects', async () => {
+    const port = portCounter++
+    const dr = createMockDataRelay()
+    server = new StatusServer({ port, dataRelay: dr, config: TEST_CONFIG })
+    await server.start()
+
+    const now = Math.floor(Date.now() / 1000)
+    dr.injectEnvelope({ ...buildSignedEnvelope({ topic: 'oracle:rates:bsv', timestamp: now }), type: 'data' })
+    dr.injectEnvelope({ ...buildSignedEnvelope({ topic: 'attestation:test', timestamp: now - 10 }), type: 'data' })
+
+    const res = await fetch(`http://127.0.0.1:${port}/data/topics`)
+    assert.equal(res.status, 200)
+    const body = await res.json()
+    assert.equal(body.count, 2)
+    // Topics should be objects with topic, count, latestTimestamp
+    const oracle = body.topics.find(t => t.topic === 'oracle:rates:bsv')
+    assert.ok(oracle, 'oracle topic should be present')
+    assert.equal(oracle.count, 1)
+    assert.equal(typeof oracle.latestTimestamp, 'number')
+    const att = body.topics.find(t => t.topic === 'attestation:test')
+    assert.ok(att, 'attestation topic should be present')
+  })
+
+  it('POST /data returns 503 when dataRelay not configured', async () => {
+    const port = portCounter++
+    server = new StatusServer({ port, config: TEST_CONFIG })
+    await server.start()
+
+    const res = await fetch(`http://127.0.0.1:${port}/data`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topic: 'test' })
+    })
+    assert.equal(res.status, 503)
   })
 })

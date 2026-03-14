@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import https from 'node:https'
 import { parseTx } from './output-parser.js'
 import { scanAddress } from './address-scanner.js'
+import { scanBlock, scriptToAsm } from './block-scanner.js'
 
 /**
  * StatusServer — localhost-only HTTP server exposing bridge status.
@@ -376,6 +377,7 @@ export class StatusServer {
         if (path.startsWith('/tx/')) ep = '/tx/:txid'
         else if (path.match(/^\/block\/\d+\/txids$/)) ep = '/block/:height/txids'
         else if (path.match(/^\/block\/\d+\/transactions$/)) ep = '/block/:height/transactions'
+        else if (path.match(/^\/block\/\d+\/scan$/)) ep = '/block/:height/scan'
         else if (path.startsWith('/inscription/')) ep = '/inscription/:content'
         else if (path.startsWith('/jobs/')) ep = '/jobs/:id'
         data.endpoints[ep] = (data.endpoints[ep] || 0) + 1
@@ -730,6 +732,81 @@ export class StatusServer {
       } catch (err) {
         res.writeHead(502, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: `Failed to fetch block: ${err.message}` }))
+      }
+      return
+    }
+
+    // GET /block/:height/scan — scan a block for whales, interesting scripts, miner info
+    // Returns aggregated results instead of raw transaction data to avoid memory issues
+    if (req.method === 'GET' && path.match(/^\/block\/\d+\/scan$/)) {
+      const height = parseInt(path.split('/')[2])
+
+      // Validate height
+      if (isNaN(height) || height < 0) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Invalid block height' }))
+        return
+      }
+
+      // Need BSV node client for P2P block fetch
+      if (!this._bsvNodeClient) {
+        res.writeHead(503, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'BSV node client not available' }))
+        return
+      }
+
+      try {
+        // Get block hash - try headerRelay first, then WoC
+        let blockHash = null
+        if (this._headerRelay) {
+          blockHash = this._headerRelay.getHashAtHeight?.(height)
+        }
+        if (!blockHash) {
+          // Fall back to WoC for hash lookup
+          const hashResp = await fetch(`https://api.whatsonchain.com/v1/bsv/main/block/height/${height}`)
+          if (!hashResp.ok) {
+            res.writeHead(hashResp.status === 404 ? 404 : 502, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ error: `Block not found: ${hashResp.status}` }))
+            return
+          }
+          const blockInfo = await hashResp.json()
+          blockHash = blockInfo.hash
+        }
+
+        // Fetch full block via P2P (60 second timeout for large blocks)
+        const block = await this._bsvNodeClient.getBlock(blockHash, 60000)
+
+        // Parse all transactions in-memory (don't serialize to JSON)
+        const transactions = []
+        for (const tx of block.transactions) {
+          try {
+            const parsed = parseTx(tx.rawHex)
+            transactions.push({
+              txid: tx.txid,
+              inputs: parsed.inputs,
+              outputs: parsed.outputs.map(o => ({
+                satoshis: o.satoshis,
+                scriptHex: o.scriptHex
+              }))
+            })
+          } catch (err) {
+            // Skip unparseable transactions
+          }
+        }
+
+        // Scan the block - this processes in memory and returns aggregated results
+        const scanResult = scanBlock(transactions, height)
+
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({
+          height,
+          hash: blockHash,
+          source: 'p2p',
+          ...scanResult
+        }))
+      } catch (err) {
+        res.writeHead(502, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: `Failed to scan block: ${err.message}` }))
       }
       return
     }

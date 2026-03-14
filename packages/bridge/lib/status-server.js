@@ -457,6 +457,56 @@ export class StatusServer {
       return
     }
 
+    // GET /chain — chain info (height, hash, mempool) similar to WoC chain/info
+    if (req.method === 'GET' && path === '/chain') {
+      const height = this._bsvNodeClient?.bestHeight || this._headerRelay?.bestHeight || 0
+      const hash = this._bsvNodeClient?.bestHash || this._headerRelay?.bestHash || null
+      const mempoolSize = this._txRelay?.mempool?.size || 0
+
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        blocks: height,
+        bestblockhash: hash,
+        mempoolsize: mempoolSize,
+        source: 'bridge-p2p'
+      }))
+      return
+    }
+
+    // GET /bsv-peers — BSV P2P network peers with node software versions
+    if (req.method === 'GET' && path === '/bsv-peers') {
+      if (!this._bsvNodeClient) {
+        res.writeHead(503, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'BSV node client not available' }))
+        return
+      }
+      const peerList = this._bsvNodeClient.peerList || []
+      const peers = peerList.map(p => ({
+        host: p.host,
+        connected: p.connected,
+        handshake: p.handshake,
+        height: p.bestHeight,
+        userAgent: p.userAgent || 'unknown'
+      }))
+
+      // Aggregate by user agent (node software version)
+      const versions = {}
+      for (const p of peers) {
+        if (p.handshake) {
+          versions[p.userAgent] = (versions[p.userAgent] || 0) + 1
+        }
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        count: peers.length,
+        connected: peers.filter(p => p.handshake).length,
+        peers,
+        versions
+      }))
+      return
+    }
+
     // GET / or /dashboard — built-in HTML dashboard
     if (req.method === 'GET' && (path === '/' || path === '/dashboard')) {
       res.writeHead(200, { 'Content-Type': 'text/html' })

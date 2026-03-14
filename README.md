@@ -9,10 +9,11 @@ A federated mesh network for BSV. Each bridge is a lightweight SPV node that syn
 - **Inscription indexing** — ordinal inscriptions with content-addressed storage and content serving
 - **BSV-20 tokens** — deploy/mint/transfer tracking, balance queries by address
 - **Protocol parsing** — P2PKH, OP_RETURN, ordinals, B://, BCAT, MAP, MetaNet, BSV-20
+- **Data envelope relay** — broadcast signed, TTL-bounded, topic-routed ephemeral data (rates, attestations, notifications) across the mesh without on-chain transactions
 - **Price feed** — live BSV/USD from WhatsOnChain
 - **Federation mesh** — bridges discover and verify each other via on-chain stake bonds
 - **Operator dashboard** — glassmorphism UI with Overview, Mempool, Explorer, Inscriptions, Tokens, and Apps tabs, plus a 3D mesh topology map powered by Three.js
-- **382 tests passing** — MIT license
+- **422 tests passing** — MIT license
 
 ## Packages
 
@@ -94,7 +95,7 @@ relay-bridge start
   "pubkeyHex": "<derived compressed public key>",
   "endpoint": "wss://your-bridge.example.com:8333",
   "meshId": "70016",
-  "capabilities": ["tx_relay", "header_sync", "broadcast", "address_history"],
+  "capabilities": ["tx_relay", "header_sync", "broadcast", "address_history", "data_relay"],
   "port": 8333,
   "statusPort": 9333,
 }
@@ -106,7 +107,7 @@ relay-bridge start
 | `pubkeyHex` | Compressed public key. This is your bridge identity. |
 | `endpoint` | Your public WSS endpoint. Other bridges connect here. |
 | `meshId` | Which mesh to join. Bridges only peer within the same mesh. |
-| `capabilities` | What this bridge supports: `tx_relay`, `header_sync`, `broadcast`, `address_history`. |
+| `capabilities` | What this bridge supports: `tx_relay`, `header_sync`, `broadcast`, `address_history`, `data_relay`. |
 | `port` | WebSocket server port. Default `8333`. |
 | `statusPort` | HTTP status server + dashboard port. Default `9333`. |
 | `seedPeers` | Array of `{endpoint, pubkeyHex}` objects — known peers to connect to on startup. |
@@ -221,6 +222,7 @@ node examples/mesh-health.js
     │                │                │
     ├─ header sync   ├─ header sync   ├─ header sync
     ├─ tx relay      ├─ tx relay      ├─ tx relay
+    ├─ data relay    ├─ data relay    ├─ data relay
     └─ status :9333  └─ status :9333  └─ status :9333
 ```
 
@@ -229,6 +231,8 @@ node examples/mesh-health.js
 **Header Sync:** Bridges exchange block headers and maintain a local header chain. New headers propagate across the mesh as they arrive.
 
 **Transaction Relay:** Transactions broadcast to any bridge propagate to all connected peers. Each bridge maintains a mempool and deduplicates by txid.
+
+**Data Relay:** Signed ephemeral data envelopes (rates, attestations, notifications) propagate to peers that declared matching topic interests. Envelopes are TTL-bounded, stored in per-topic ring buffers, and pruned on expiry. Pull-based catch-up lets bridges that come online late request missed data from peers.
 
 **Registry:** Bridges register on-chain using a CBOR-encoded OP_RETURN protocol. Other bridges scan the chain to discover peers, filtering by mesh ID and capabilities.
 
@@ -241,7 +245,7 @@ git clone https://github.com/zcoolz/relay-federation.git
 cd relay-federation
 npm install
 
-# Run bridge tests (382 tests)
+# Run bridge tests (422 tests)
 npm test --workspace=packages/bridge
 ```
 

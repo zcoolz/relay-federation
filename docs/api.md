@@ -166,6 +166,100 @@ All bridges known to this node (self + gossip directory).
 
 ---
 
+### POST /data
+
+Submit a signed data envelope for relay to the mesh.
+
+**Request:**
+
+```json
+{
+  "topic": "oracle:rates:bsv",
+  "payload": "{\"USD\":42.50}",
+  "pubkeyHex": "02abc...",
+  "timestamp": 1710300000,
+  "ttl": 300,
+  "signature": "3045..."
+}
+```
+
+**Response (200):**
+
+```json
+{
+  "accepted": true,
+  "topic": "oracle:rates:bsv"
+}
+```
+
+**Error (400):**
+
+```json
+{
+  "accepted": false,
+  "error": "invalid_signature"
+}
+```
+
+Error codes: `missing_fields`, `payload_too_large`, `ttl_too_large`, `timestamp_future`, `expired_ttl`, `duplicate`, `invalid_signature`.
+
+---
+
+### GET /data/topics
+
+List all topics with cached data envelopes.
+
+**Response (200):**
+
+```json
+{
+  "count": 2,
+  "topics": [
+    { "topic": "oracle:rates:bsv", "count": 12, "latestTimestamp": 1710300000 },
+    { "topic": "attestation:test", "count": 3, "latestTimestamp": 1710299500 }
+  ]
+}
+```
+
+---
+
+### GET /data/:topic
+
+Query cached envelopes for a topic.
+
+**Query parameters:**
+- `since` (optional) — Unix timestamp, return envelopes newer than this
+- `limit` (optional) — Max envelopes to return (default 10, clamped to 1–100)
+
+**Response (200):**
+
+```json
+{
+  "topic": "oracle:rates:bsv",
+  "count": 1,
+  "envelopes": [
+    {
+      "type": "data",
+      "topic": "oracle:rates:bsv",
+      "payload": "{\"USD\":42.50}",
+      "pubkeyHex": "02abc...",
+      "timestamp": 1710300000,
+      "ttl": 300,
+      "signature": "3045..."
+    }
+  ],
+  "hasMore": false
+}
+```
+
+**Response (404):** Topic has no cached envelopes.
+
+```json
+{ "topic": "oracle:rates:bsv", "count": 0, "envelopes": [], "hasMore": false }
+```
+
+---
+
 ### GET /tx/:txid
 
 Fetch and parse a transaction by txid. Checks mempool first, then BSV P2P, then WhatsOnChain fallback.

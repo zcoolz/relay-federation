@@ -23,6 +23,7 @@ This document specifies the wire formats, on-chain structures, and peer-to-peer 
 7. [Transaction Confirmation Model](#7-transaction-confirmation-model)
 8. [Content-Addressed Storage](#8-content-addressed-storage)
 9. [BSV-20 Token State Machine](#9-bsv-20-token-state-machine)
+10. [Data Relay Protocol](#10-data-relay-protocol)
 
 ---
 
@@ -511,6 +512,108 @@ Every token operation (deploy or mint) is applied as a single LevelDB `batch()`:
 ### Chain Ordering
 
 Operation keys use zero-padded heights (`0000890123`) for lexicographic ordering. This ensures deterministic replay — if two deploys compete for the same tick, the one at the lower height wins.
+
+---
+
+## 10. Data Relay Protocol
+
+Ephemeral signed data envelopes — topic-routed, TTL-bounded, broadcast to interested peers via gossip. Fills the gap between BRC-22 (UTXO-based overlay sync) and BRC-33 (point-to-point messaging): broadcast ephemeral signals like rates, attestations, and notifications without on-chain transactions.
+
+### 10.1 Wire Messages
+
+Four new message types added to the existing WebSocket protocol.
+
+#### data (gossip push)
+
+Signed data envelope broadcast to all interested peers.
+
+```json
+{
+  "type": "data",
+  "topic": "oracle:rates:bsv",
+  "payload": "{\"USD\":42.50}",
+  "pubkeyHex": "02abc...",
+  "timestamp": 1710300000,
+  "ttl": 300,
+  "signature": "3045..."
+}
+```
+
+**Signature payload:** UTF-8 bytes of `topic + payload + timestamp + ttl` → hex → SHA-256 → ECDSA sign → DER hex.
+
+**Validation:**
+1. Verify signature against `pubkeyHex`
+2. Check timestamp freshness: not more than 30s in future, not expired (`timestamp + ttl >= now`)
+3. Reject if payload > 4 KB or TTL > 3600s
+4. Deduplicate by SHA-256 of `pubkeyHex:topic:payload:timestamp`
+5. Forward to interested peers (by topic prefix match), excluding source
+
+**Storage:** Bounded in-memory ring buffer per topic (default 100 envelopes, FIFO eviction). Expired envelopes pruned on read.
+
+#### topics (interest declaration)
+
+Peer declares which topic prefixes it wants to receive.
+
+```json
+{
+  "type": "topics",
+  "interests": ["oracle:", "attestation:"],
+  "pubkeyHex": "02abc...",
+  "timestamp": 1710300000,
+  "signature": "3045..."
+}
+```
+
+**Signature payload:** UTF-8 bytes of `interests.join(',') + timestamp` → hex → SHA-256 → ECDSA sign → DER hex.
+
+**Matching:** String prefix match. Interest `"oracle:"` matches `"oracle:rates:bsv"`, `"oracle:rates:eth"`, etc. Wildcard `"*"` matches all topics.
+
+**Default:** Peers with no declared interests receive no data envelopes. Transaction relay and header sync are unaffected.
+
+#### data_request / data_response (pull-based catch-up)
+
+A peer requests cached envelopes from another peer's local ring buffer. Local query only — not forwarded to other peers.
+
+```json
+// Request
+{
+  "type": "data_request",
+  "topic": "oracle:rates:bsv",
+  "since": 1710299700,
+  "limit": 10
+}
+
+// Response
+{
+  "type": "data_response",
+  "topic": "oracle:rates:bsv",
+  "envelopes": [ /* array of data envelopes */ ],
+  "hasMore": false
+}
+```
+
+**Ingestion:** Envelopes from `data_response` are validated and stored locally but NOT re-forwarded as gossip. Catch-up is point-to-point.
+
+### 10.2 Constraints
+
+| Parameter | Value |
+|---|---|
+| Max payload size | 4,096 bytes |
+| Max TTL | 3,600 seconds (1 hour) |
+| Max future timestamp | 30 seconds |
+| Ring buffer default | 100 envelopes per topic |
+| Dedup set | Bounded FIFO, default 10,000 entries |
+| `limit` range | Clamped to 1–100 |
+
+### 10.3 What Data Envelopes Are NOT
+
+- Not persistent (TTL-bounded, in-memory only)
+- Not UTXO-based (no on-chain representation)
+- Not addressed (broadcast, not point-to-point)
+- Not a transaction submission path (use ARC for that)
+- Not a proof service (use Teranode Asset Server)
+
+Payment for data operations via BRC-105 on HTTP endpoints is deferred.
 
 ---
 

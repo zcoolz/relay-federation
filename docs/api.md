@@ -203,6 +203,8 @@ Submit a signed data envelope for relay to the mesh.
 
 Error codes: `missing_fields`, `payload_too_large`, `ttl_too_large`, `timestamp_future`, `expired_ttl`, `duplicate`, `invalid_signature`.
 
+**Note:** All `/data` endpoints return `503 Service Unavailable` if the data relay module is not configured on the bridge.
+
 ---
 
 ### GET /data/topics

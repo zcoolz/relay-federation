@@ -559,7 +559,7 @@ These invariants establish the boundary between the data relay layer and the res
 
 ### 14.2 Wire Protocol
 
-Three message types are added to the existing WebSocket protocol. The existing twelve message types (hello, challenge_response, verify, getpeers, peers, announce, header_announce, header_request, headers, tx_announce, tx_request, tx) are unchanged.
+Four message types are added to the existing WebSocket protocol. The existing twelve message types (hello, challenge_response, verify, getpeers, peers, announce, header_announce, header_request, headers, tx_announce, tx_request, tx) are unchanged.
 
 #### Signed Data Envelope
 

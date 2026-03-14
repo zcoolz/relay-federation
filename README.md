@@ -13,7 +13,7 @@ A federated mesh network for BSV. Each bridge is a lightweight SPV node that syn
 - **Price feed** — live BSV/USD from WhatsOnChain
 - **Federation mesh** — bridges discover and verify each other via on-chain stake bonds
 - **Operator dashboard** — glassmorphism UI with Overview, Mempool, Explorer, Inscriptions, Tokens, and Apps tabs, plus a 3D mesh topology map powered by Three.js
-- **422 tests passing** — MIT license
+- **422 tests passing** (330 bridge + 92 common/registry/sdk) — MIT license
 
 ## Packages
 
@@ -95,7 +95,7 @@ relay-bridge start
   "pubkeyHex": "<derived compressed public key>",
   "endpoint": "wss://your-bridge.example.com:8333",
   "meshId": "70016",
-  "capabilities": ["tx_relay", "header_sync", "broadcast", "address_history", "data_relay"],
+  "capabilities": ["tx_relay", "header_sync", "broadcast", "address_history"],
   "port": 8333,
   "statusPort": 9333,
 }
@@ -107,7 +107,7 @@ relay-bridge start
 | `pubkeyHex` | Compressed public key. This is your bridge identity. |
 | `endpoint` | Your public WSS endpoint. Other bridges connect here. |
 | `meshId` | Which mesh to join. Bridges only peer within the same mesh. |
-| `capabilities` | What this bridge supports: `tx_relay`, `header_sync`, `broadcast`, `address_history`, `data_relay`. |
+| `capabilities` | What this bridge supports: `tx_relay`, `header_sync`, `broadcast`, `address_history`. |
 | `port` | WebSocket server port. Default `8333`. |
 | `statusPort` | HTTP status server + dashboard port. Default `9333`. |
 | `seedPeers` | Array of `{endpoint, pubkeyHex}` objects — known peers to connect to on startup. |
@@ -264,7 +264,7 @@ git clone https://github.com/zcoolz/relay-federation.git
 cd relay-federation
 npm install
 
-# Run bridge tests (422 tests)
+# Run bridge tests (330 tests)
 npm test --workspace=packages/bridge
 ```
 

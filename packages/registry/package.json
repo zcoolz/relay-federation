@@ -1,6 +1,6 @@
 {
   "name": "@relay-federation/registry",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "On-chain bridge registry — CBOR encoding, registration/deregistration tx builders",
   "type": "module",
   "main": "index.js",
@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "@bsv/sdk": "^1.10.1",
-    "@relay-federation/common": "^0.1.0",
+    "@relay-federation/common": "^0.2.0",
     "cborg": "^4.5.8"
   }
 }

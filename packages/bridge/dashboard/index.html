@@ -1003,11 +1003,8 @@ function generateQR(text) {
 }
 
 // ── Configuration ──────────────────────────────────
-// Seed URLs only — names come from each bridge's /status response
-const SEED_URLS = [
-  'http://144.202.48.217:9333',
-  'http://45.63.77.31:9333'
-];
+// Bootstrap from self — discover the rest of the mesh via /discover
+const SEED_URLS = [window.location.origin];
 let BRIDGES = SEED_URLS.map(url => ({ name: null, url }));
 const POLL_INTERVAL = 5000;
 let discoveryDone = false;
@@ -1126,12 +1123,9 @@ async function pollAll() {
   if (!selectedBridge && bridgeData.size > 0) {
     selectedBridge = bridgeData.keys().next().value;
   }
-  // Fetch price from first online bridge
-  const firstOnline = results.find(b => !b._error);
-  if (firstOnline) {
-    fetch(firstOnline._url + '/price', { signal: AbortSignal.timeout(5000) })
-      .then(r => r.ok ? r.json() : null).then(d => { if (d) latestPrice = d; }).catch(() => {});
-  }
+  // Fetch price from self (same-origin, always works)
+  fetch('/price', { signal: AbortSignal.timeout(5000) })
+    .then(r => r.ok ? r.json() : null).then(d => { if (d) latestPrice = d; }).catch(() => {});
   renderHeader();
   renderBridgeRail();
   renderActiveTab(true);

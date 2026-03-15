@@ -194,7 +194,7 @@
   /* ── Stats hero (overview tab) ───────────────────── */
   .stats-hero {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     gap: 12px;
     margin-bottom: 20px;
   }
@@ -648,6 +648,7 @@
       <span><span class="val" id="hBridgeCount">-</span> bridges</span>
       <span>height <span class="val" id="hBestHeight">-</span></span>
       <span><span class="val" id="hTotalPeers">-</span> peers</span>
+      <span>BSV <span class="val" id="hBsvPrice">—</span></span>
     </div>
   </div>
 </div>
@@ -893,6 +894,16 @@ function renderHeader() {
   if (online.length === all.length) { dot.className = 'status-dot green pulse'; status.textContent = 'healthy'; }
   else if (online.length > 0) { dot.className = 'status-dot yellow pulse'; status.textContent = 'degraded'; }
   else { dot.className = 'status-dot red pulse'; status.textContent = 'offline'; }
+
+  // BSV price from first online bridge
+  if (online.length > 0 && !document.getElementById('hBsvPrice').dataset.fetching) {
+    document.getElementById('hBsvPrice').dataset.fetching = '1';
+    fetch(online[0]._url + '/price', { signal: AbortSignal.timeout(5000) })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d && d.usd) document.getElementById('hBsvPrice').textContent = '$' + d.usd.toFixed(2); })
+      .catch(() => {})
+      .finally(() => { delete document.getElementById('hBsvPrice').dataset.fetching; });
+  }
 }
 
 // ── Bridge rail ────────────────────────────────────
@@ -958,6 +969,9 @@ function renderOverviewTab() {
   html += '<div class="stat-card glass"><div class="stat-value green">' + fmtHeight(bestH) + '</div><div class="stat-label">Best Height</div></div>';
   html += '<div class="stat-card glass"><div class="stat-value">' + totalPeers + '</div><div class="stat-label">Mesh Peers</div></div>';
   html += '<div class="stat-card glass"><div class="stat-value">' + totalMempool + '</div><div class="stat-label">Mempool Txs</div></div>';
+  const priceEl = document.getElementById('hBsvPrice');
+  const priceText = priceEl && priceEl.textContent !== '—' ? priceEl.textContent : '—';
+  html += '<div class="stat-card glass"><div class="stat-value">' + priceText + '</div><div class="stat-label">BSV / USD</div></div>';
   html += '</div>';
 
   const b = bridgeData.get(selectedBridge);

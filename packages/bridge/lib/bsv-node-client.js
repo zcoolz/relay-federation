@@ -136,6 +136,21 @@ export class BSVNodeClient extends EventEmitter {
   }
 
   /**
+   * Fetch a full block from the first available peer.
+   * @param {string} blockHash
+   * @param {number} [timeoutMs=60000]
+   * @returns {Promise<{ blockHash, header, transactions: Array<{ txid, rawHex }> }>}
+   */
+  getBlock (blockHash, timeoutMs = 60000) {
+    for (const peer of this._peers.values()) {
+      if (peer._handshakeComplete) {
+        return peer.getBlock(blockHash, timeoutMs)
+      }
+    }
+    return Promise.reject(new Error('not connected to BSV node'))
+  }
+
+  /**
    * Trigger header sync on connected peers.
    */
   syncHeaders () {

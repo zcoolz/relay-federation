@@ -72,6 +72,17 @@ export class StatusServer {
     this._appBridgeDomains = new Set()
     this._appCheckInterval = null
     this._addressCache = new Map()
+
+    // Rate limiting state
+    this._rateLimits = new Map() // IP -> { requests: [], blocked: boolean }
+    this._rateLimitConfig = {
+      windowMs: 60 * 1000,        // 1 minute window
+      maxRequests: 10,            // 10 requests per minute (just enough to poke around)
+      maxHeavyRequests: 2,        // 2 heavy requests per minute (enough to test, not scrape)
+      blockDurationMs: 15 * 60 * 1000  // 15 minute block for abuse
+    }
+    // Cleanup stale rate limit entries every 5 minutes
+    setInterval(() => this._cleanupRateLimits(), 5 * 60 * 1000)
     if (this._config.apps) {
       for (const app of this._config.apps) {
         this._appChecks.set(app.url, { checks: [], lastError: null })
@@ -187,6 +198,106 @@ export class StatusServer {
     if (authHeader && authHeader.startsWith('Bearer ') && authHeader.slice(7) === secret) return true
 
     return false
+  }
+
+  /**
+   * Get client IP from request (handles proxies).
+   * @param {import('node:http').IncomingMessage} req
+   * @returns {string}
+   */
+  _getClientIP (req) {
+    const forwarded = req.headers['x-forwarded-for']
+    if (forwarded) {
+      return forwarded.split(',')[0].trim()
+    }
+    return req.socket?.remoteAddress || 'unknown'
+  }
+
+  /**
+   * Check if a path is a "heavy" endpoint (fetches external data, rate limited).
+   * @param {string} path
+   * @returns {boolean}
+   */
+  _isHeavyEndpoint (path) {
+    // Block endpoints - full block fetching
+    if (path.match(/^\/block\/\d+\/(transactions|txids)$/)) return true
+    // Transaction endpoints - P2P/WoC lookup
+    if (path.match(/^\/tx\/[0-9a-f]{64}(\/status)?$/)) return true
+    // Address endpoints - WoC lookup
+    if (path.match(/^\/address\/[^/]+\/history$/)) return true
+    return false
+  }
+
+  /**
+   * Clean up stale rate limit entries.
+   */
+  _cleanupRateLimits () {
+    const now = Date.now()
+    for (const [ip, data] of this._rateLimits) {
+      // Remove entries with no recent requests and not blocked
+      if (!data.blocked && data.requests.length === 0) {
+        this._rateLimits.delete(ip)
+      }
+      // Unblock IPs after block duration
+      if (data.blocked && now - data.blockedAt > this._rateLimitConfig.blockDurationMs) {
+        data.blocked = false
+        data.blockedAt = null
+        data.requests = []
+      }
+    }
+  }
+
+  /**
+   * Check rate limit for a request. Returns true if allowed, false if blocked.
+   * @param {import('node:http').IncomingMessage} req
+   * @param {string} path
+   * @returns {{ allowed: boolean, reason?: string, retryAfter?: number }}
+   */
+  _checkRateLimit (req, path) {
+    const ip = this._getClientIP(req)
+    const now = Date.now()
+    const { windowMs, maxRequests, maxHeavyRequests, blockDurationMs } = this._rateLimitConfig
+
+    // Initialize tracking for this IP
+    if (!this._rateLimits.has(ip)) {
+      this._rateLimits.set(ip, { requests: [], heavyRequests: [], blocked: false, blockedAt: null })
+    }
+
+    const data = this._rateLimits.get(ip)
+
+    // Check if IP is blocked
+    if (data.blocked) {
+      const remaining = Math.ceil((data.blockedAt + blockDurationMs - now) / 1000)
+      return { allowed: false, reason: 'blocked', retryAfter: remaining }
+    }
+
+    // Clean old requests outside window
+    data.requests = data.requests.filter(t => now - t < windowMs)
+    data.heavyRequests = data.heavyRequests.filter(t => now - t < windowMs)
+
+    const isHeavy = this._isHeavyEndpoint(path)
+
+    // Check heavy endpoint limit
+    if (isHeavy && data.heavyRequests.length >= maxHeavyRequests) {
+      // Block the IP for abuse
+      data.blocked = true
+      data.blockedAt = now
+      this.addLog(`🚫 Rate limit: Blocked ${ip} for excessive heavy requests`)
+      return { allowed: false, reason: 'heavy_limit', retryAfter: Math.ceil(blockDurationMs / 1000) }
+    }
+
+    // Check general limit
+    if (data.requests.length >= maxRequests) {
+      return { allowed: false, reason: 'rate_limit', retryAfter: Math.ceil(windowMs / 1000) }
+    }
+
+    // Allow request and track it
+    data.requests.push(now)
+    if (isHeavy) {
+      data.heavyRequests.push(now)
+    }
+
+    return { allowed: true }
   }
 
   /**
@@ -383,10 +494,31 @@ export class StatusServer {
         data.total++
         let ep = path
         if (path.startsWith('/tx/')) ep = '/tx/:txid'
+        else if (path.match(/^\/block\/\d+\/txids$/)) ep = '/block/:height/txids'
+        else if (path.match(/^\/block\/\d+\/transactions$/)) ep = '/block/:height/transactions'
         else if (path.startsWith('/inscription/')) ep = '/inscription/:content'
         else if (path.startsWith('/jobs/')) ep = '/jobs/:id'
         data.endpoints[ep] = (data.endpoints[ep] || 0) + 1
         data.lastSeen = new Date().toISOString()
+      }
+    }
+
+    // Rate limiting (only for heavy endpoints, skip for authenticated requests)
+    // Lightweight endpoints (dashboard, status, logs) are always allowed - matches Ryan's public design
+    // Heavy endpoints (block scanning, transaction fetching) are rate limited to prevent abuse
+    if (!authenticated && this._isHeavyEndpoint(path)) {
+      const rateCheck = this._checkRateLimit(req, path)
+      if (!rateCheck.allowed) {
+        res.writeHead(429, {
+          'Content-Type': 'application/json',
+          'Retry-After': String(rateCheck.retryAfter || 60)
+        })
+        res.end(JSON.stringify({
+          error: 'Too Many Requests',
+          reason: rateCheck.reason,
+          retryAfter: rateCheck.retryAfter
+        }))
+        return
       }
     }
 
@@ -461,6 +593,56 @@ export class StatusServer {
       }
       res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' })
       res.end(JSON.stringify({ count: bridges.length, bridges }))
+      return
+    }
+
+    // GET /chain — chain info (height, hash, mempool) similar to WoC chain/info
+    if (req.method === 'GET' && path === '/chain') {
+      const height = this._bsvNodeClient?.bestHeight || this._headerRelay?.bestHeight || 0
+      const hash = this._bsvNodeClient?.bestHash || this._headerRelay?.bestHash || null
+      const mempoolSize = this._txRelay?.mempool?.size || 0
+
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        blocks: height,
+        bestblockhash: hash,
+        mempoolsize: mempoolSize,
+        source: 'bridge-p2p'
+      }))
+      return
+    }
+
+    // GET /bsv-peers — BSV P2P network peers with node software versions
+    if (req.method === 'GET' && path === '/bsv-peers') {
+      if (!this._bsvNodeClient) {
+        res.writeHead(503, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'BSV node client not available' }))
+        return
+      }
+      const peerList = this._bsvNodeClient.peerList || []
+      const peers = peerList.map(p => ({
+        host: p.host,
+        connected: p.connected,
+        handshake: p.handshake,
+        height: p.bestHeight,
+        userAgent: p.userAgent || 'unknown'
+      }))
+
+      // Aggregate by user agent (node software version)
+      const versions = {}
+      for (const p of peers) {
+        if (p.handshake) {
+          versions[p.userAgent] = (versions[p.userAgent] || 0) + 1
+        }
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        count: peers.length,
+        connected: peers.filter(p => p.handshake).length,
+        peers,
+        versions
+      }))
       return
     }
 
@@ -591,6 +773,159 @@ export class StatusServer {
       } catch (err) {
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ txid, source, size: rawHex.length / 2, error: 'parse failed: ' + err.message }))
+      }
+      return
+    }
+
+    // GET /block/:height/txids — list transaction IDs in a block
+    // Hybrid approach: uses WoC API for txid list, will migrate to P2P MSG_BLOCK later
+    if (req.method === 'GET' && path.match(/^\/block\/\d+\/txids$/)) {
+      const height = parseInt(path.split('/')[2])
+
+      // Validate height
+      if (isNaN(height) || height < 0) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Invalid block height' }))
+        return
+      }
+
+      // Get block hash from headerRelay if available
+      let blockHash = null
+      if (this._headerRelay) {
+        blockHash = this._headerRelay.getHashAtHeight?.(height)
+      }
+
+      try {
+        // Fetch block info from WoC (includes first 100 txids + pagination info)
+        const blockUrl = blockHash
+          ? `https://api.whatsonchain.com/v1/bsv/main/block/hash/${blockHash}`
+          : `https://api.whatsonchain.com/v1/bsv/main/block/height/${height}`
+
+        const resp = await fetch(blockUrl)
+        if (!resp.ok) {
+          res.writeHead(resp.status === 404 ? 404 : 502, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: `Block not found: ${resp.status}` }))
+          return
+        }
+
+        const blockData = await resp.json()
+        const hash = blockData.hash
+
+        // Start with first 100 txids from block info
+        let txids = blockData.tx || []
+        const totalTxCount = blockData.txcount || blockData.num_tx || txids.length
+
+        // If there are more txids, fetch additional pages
+        // WoC uses pages of 50,000 txids each, starting at page 1
+        if (blockData.pages && blockData.pages.uri && blockData.pages.uri.length > 0) {
+          for (const pageUri of blockData.pages.uri) {
+            const pageResp = await fetch(`https://api.whatsonchain.com/v1/bsv/main${pageUri}`)
+            if (pageResp.ok) {
+              const pageData = await pageResp.json()
+              if (Array.isArray(pageData)) {
+                txids = txids.concat(pageData)
+              }
+            }
+          }
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({
+          height: blockData.height,
+          hash,
+          txCount: txids.length,
+          totalTxCount,
+          txids,
+          source: 'woc' // Will change to 'p2p' when MSG_BLOCK is implemented
+        }))
+      } catch (err) {
+        res.writeHead(502, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: `Failed to fetch block: ${err.message}` }))
+      }
+      return
+    }
+
+    // GET /block/:height/transactions — fetch full block with all parsed transactions via P2P
+    // This is the bulk endpoint for scanners that need all transaction data in one call
+    if (req.method === 'GET' && path.match(/^\/block\/\d+\/transactions$/)) {
+      const height = parseInt(path.split('/')[2])
+
+      // Validate height
+      if (isNaN(height) || height < 0) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Invalid block height' }))
+        return
+      }
+
+      // Need BSV node client for P2P block fetch
+      if (!this._bsvNodeClient) {
+        res.writeHead(503, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'BSV node client not available' }))
+        return
+      }
+
+      try {
+        // Get block hash - try headerRelay (memory), then store (LevelDB)
+        // No WhatsOnChain fallback - pure P2P
+        let blockHash = null
+
+        // 1. Try headerRelay (in-memory)
+        if (this._headerRelay) {
+          blockHash = this._headerRelay.getHashAtHeight?.(height)
+        }
+
+        // 2. Try persistent store (LevelDB)
+        if (!blockHash && this._store) {
+          try {
+            const header = await this._store.getHeader(height)
+            if (header?.hash) blockHash = header.hash
+          } catch {}
+        }
+
+        // 3. No WoC fallback - fail if we don't have the header
+        if (!blockHash) {
+          res.writeHead(404, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({
+            error: `Header not found for height ${height}. Headers synced: ${this._headerRelay?.bestHeight || 0}`,
+            hint: 'Bridge may need more time to sync headers from BSV P2P network'
+          }))
+          return
+        }
+
+        // Fetch full block via P2P (60 second timeout for large blocks)
+        const block = await this._bsvNodeClient.getBlock(blockHash, 60000)
+
+        // Parse all transactions
+        const transactions = []
+        for (const tx of block.transactions) {
+          try {
+            const parsed = parseTx(tx.rawHex)
+            transactions.push({
+              txid: tx.txid,
+              size: tx.rawHex.length / 2,
+              inputs: parsed.inputs,
+              outputs: parsed.outputs
+            })
+          } catch (err) {
+            transactions.push({
+              txid: tx.txid,
+              size: tx.rawHex.length / 2,
+              error: 'parse failed: ' + err.message
+            })
+          }
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({
+          height,
+          hash: blockHash,
+          txCount: transactions.length,
+          transactions,
+          source: 'p2p'
+        }))
+      } catch (err) {
+        res.writeHead(502, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: `Failed to fetch block: ${err.message}` }))
       }
       return
     }

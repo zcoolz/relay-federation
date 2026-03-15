@@ -132,6 +132,40 @@ export class GossipManager extends EventEmitter {
     })
   }
 
+  /**
+   * Update a peer's endpoint after successful handshake and broadcast the update.
+   *
+   * This enables self-healing when a peer changes IP: after they complete a
+   * cryptographically verified handshake from their new endpoint, we update
+   * our directory and immediately broadcast the change to all connected peers.
+   *
+   * @param {{ pubkeyHex: string, endpoint: string, meshId?: string }} peer
+   * @returns {boolean} true if the endpoint was updated (changed from cached value)
+   */
+  updatePeerEndpoint (peer) {
+    const existing = this._directory.get(peer.pubkeyHex)
+    const endpointChanged = !existing || existing.endpoint !== peer.endpoint
+
+    // Update the directory entry
+    this._directory.set(peer.pubkeyHex, {
+      pubkeyHex: peer.pubkeyHex,
+      endpoint: peer.endpoint,
+      meshId: peer.meshId || existing?.meshId || this._meshId,
+      lastSeen: Date.now()
+    })
+
+    // If endpoint changed, broadcast the update to all connected peers
+    if (endpointChanged) {
+      const updatedPeer = this._directory.get(peer.pubkeyHex)
+      this.peerManager.broadcast({
+        type: 'peers',
+        peers: [updatedPeer]
+      }, peer.pubkeyHex) // exclude the peer we just updated
+    }
+
+    return endpointChanged
+  }
+
   /** @private */
   _handleMessage (pubkeyHex, message) {
     switch (message.type) {

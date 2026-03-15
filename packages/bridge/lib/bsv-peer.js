@@ -155,6 +155,9 @@ export class BSVPeer extends EventEmitter {
     // Transaction tracking
     this._pendingTxRequests = new Map()
     this._pendingBroadcasts = new Map()
+
+    // Block tracking
+    this._pendingBlockRequests = new Map()
   }
 
   /**
@@ -295,6 +298,38 @@ export class BSVPeer extends EventEmitter {
   }
 
   /**
+   * Fetch a full block by hash from this peer.
+   * Returns the raw block hex and parsed transactions.
+   * @param {string} blockHash — block hash (display format)
+   * @param {number} [timeoutMs=60000] — longer timeout for large blocks
+   * @returns {Promise<{ blockHash, rawHex, txCount, transactions: Array<{ txid, rawHex }> }>}
+   */
+  getBlock (blockHash, timeoutMs = 60000) {
+    if (!this._handshakeComplete) {
+      return Promise.reject(new Error('not connected to BSV node'))
+    }
+    if (this._pendingBlockRequests.has(blockHash)) {
+      return Promise.reject(new Error(`already fetching block ${blockHash.slice(0, 16)}...`))
+    }
+
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this._pendingBlockRequests.delete(blockHash)
+        reject(new Error(`timeout fetching block ${blockHash.slice(0, 16)}...`))
+      }, timeoutMs)
+
+      this._pendingBlockRequests.set(blockHash, { resolve, reject, timer })
+
+      // Send getdata with MSG_BLOCK (type 2)
+      const payload = Buffer.alloc(37)
+      payload[0] = 1 // count = 1
+      payload.writeUInt32LE(2, 1) // MSG_BLOCK = 2
+      hashToInternal(blockHash).copy(payload, 5)
+      this._sendMessage('getdata', payload)
+    })
+  }
+
+  /**
    * Broadcast a raw transaction using correct inv/getdata/tx flow.
    * Sends inv announcement; peers respond with getdata; we serve the tx.
    *
@@ -415,6 +450,9 @@ export class BSVPeer extends EventEmitter {
         break
       case 'tx':
         this._onTx(payload)
+        break
+      case 'block':
+        this._onBlock(payload)
         break
       case 'notfound':
         this._onNotfound(payload)
@@ -639,6 +677,101 @@ export class BSVPeer extends EventEmitter {
     }
   }
 
+  _onBlock (payload) {
+    // Block format: 80-byte header + varint txCount + raw transactions
+    if (payload.length < 80) return
+
+    const header = payload.subarray(0, 80)
+    const blockHash = internalToHash(sha256d(header))
+
+    // Parse transaction count
+    const txCountInfo = readVarInt(payload, 80)
+    const txCount = txCountInfo.value
+    let offset = 80 + txCountInfo.size
+
+    // Parse each transaction
+    const transactions = []
+    for (let i = 0; i < txCount; i++) {
+      if (offset >= payload.length) break
+
+      // Parse transaction to find its length
+      const txStart = offset
+      offset = this._parseTxLength(payload, offset)
+      if (offset === -1) break
+
+      const txBuf = payload.subarray(txStart, offset)
+      const txid = internalToHash(sha256d(txBuf))
+      const rawHex = txBuf.toString('hex')
+      transactions.push({ txid, rawHex })
+    }
+
+    this.emit('block', { blockHash, header: header.toString('hex'), transactions })
+
+    const pending = this._pendingBlockRequests.get(blockHash)
+    if (pending) {
+      clearTimeout(pending.timer)
+      this._pendingBlockRequests.delete(blockHash)
+      pending.resolve({ blockHash, header: header.toString('hex'), transactions })
+    }
+  }
+
+  // Parse transaction to find its end offset
+  _parseTxLength (buf, start) {
+    let offset = start
+
+    // Version (4 bytes)
+    if (offset + 4 > buf.length) return -1
+    offset += 4
+
+    // Input count
+    const inCountInfo = readVarInt(buf, offset)
+    if (offset + inCountInfo.size > buf.length) return -1
+    offset += inCountInfo.size
+
+    // Inputs
+    for (let i = 0; i < inCountInfo.value; i++) {
+      // prevTxid (32) + prevVout (4)
+      if (offset + 36 > buf.length) return -1
+      offset += 36
+
+      // scriptSig length + scriptSig
+      const scriptLenInfo = readVarInt(buf, offset)
+      if (offset + scriptLenInfo.size > buf.length) return -1
+      offset += scriptLenInfo.size
+      if (offset + scriptLenInfo.value > buf.length) return -1
+      offset += scriptLenInfo.value
+
+      // sequence (4 bytes)
+      if (offset + 4 > buf.length) return -1
+      offset += 4
+    }
+
+    // Output count
+    const outCountInfo = readVarInt(buf, offset)
+    if (offset + outCountInfo.size > buf.length) return -1
+    offset += outCountInfo.size
+
+    // Outputs
+    for (let i = 0; i < outCountInfo.value; i++) {
+      // value (8 bytes)
+      if (offset + 8 > buf.length) return -1
+      offset += 8
+
+      // scriptPubKey length + scriptPubKey
+      const scriptLenInfo = readVarInt(buf, offset)
+      if (offset + scriptLenInfo.size > buf.length) return -1
+      offset += scriptLenInfo.size
+      if (offset + scriptLenInfo.value > buf.length) return -1
+      offset += scriptLenInfo.value
+    }
+
+    // locktime (4 bytes)
+    if (offset + 4 > buf.length) return -1
+    offset += 4
+
+    return offset
+  }
+
   _onNotfound (payload) {
     if (payload.length < 1) return
     const countInfo = readVarInt(payload, 0)
@@ -657,6 +790,14 @@ export class BSVPeer extends EventEmitter {
           clearTimeout(pending.timer)
           this._pendingTxRequests.delete(txid)
           pending.reject(new Error(`tx not found: ${txid.slice(0, 16)}...`))
+        }
+      } else if (invType === 2) {
+        const blockHash = internalToHash(hashBuf)
+        const pending = this._pendingBlockRequests.get(blockHash)
+        if (pending) {
+          clearTimeout(pending.timer)
+          this._pendingBlockRequests.delete(blockHash)
+          pending.reject(new Error(`block not found: ${blockHash.slice(0, 16)}...`))
         }
       }
     }

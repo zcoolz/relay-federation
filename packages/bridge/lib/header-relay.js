@@ -83,6 +83,12 @@ export class HeaderRelay extends EventEmitter {
     return this.headers.get(height) || null
   }
 
+  /** Get block hash at a specific height, or null. */
+  getHashAtHeight (height) {
+    const header = this.headers.get(height)
+    return header ? header.hash : null
+  }
+
   /**
    * Announce our best header to all connected peers.
    * @returns {number} peers notified

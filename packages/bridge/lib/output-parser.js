@@ -23,12 +23,25 @@ export function parseTx (rawHex) {
   const tx = Transaction.fromHex(rawHex)
   const txid = tx.id('hex')
 
-  const inputs = tx.inputs.map(input => ({
-    prevTxid: typeof input.sourceTXID === 'string'
+  const inputs = tx.inputs.map(input => {
+    const prevTxid = typeof input.sourceTXID === 'string'
       ? input.sourceTXID
-      : Buffer.from(input.sourceTXID).toString('hex'),
-    prevVout: input.sourceOutputIndex
-  }))
+      : Buffer.from(input.sourceTXID).toString('hex')
+    const prevVout = input.sourceOutputIndex
+
+    // Detect coinbase transaction: prevTxid is all zeros and prevVout is 0xFFFFFFFF
+    const isCoinbase = prevTxid === '0000000000000000000000000000000000000000000000000000000000000000' &&
+                       prevVout === 4294967295
+
+    const result = { prevTxid, prevVout }
+
+    // Include coinbase scriptSig (contains miner tag) for coinbase transactions
+    if (isCoinbase && input.unlockingScript) {
+      result.coinbase = input.unlockingScript.toHex()
+    }
+
+    return result
+  })
 
   const outputs = tx.outputs.map((output, vout) => {
     const scriptHex = output.lockingScript.toHex()

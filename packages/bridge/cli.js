@@ -325,7 +325,12 @@ async function cmdStart () {
   peerManager.on('peer:connect', ({ pubkeyHex, endpoint }) => {
     peerHealth.recordSeen(pubkeyHex)
     scorer.setStakeAge(pubkeyHex, 7)
-    if (endpoint) gossipManager.addSeed({ pubkeyHex, endpoint, meshId: config.meshId })
+    if (endpoint) {
+      const updated = gossipManager.updatePeerEndpoint({ pubkeyHex, endpoint, meshId: config.meshId })
+      if (updated) {
+        console.log(`  Endpoint updated: ${pubkeyHex.slice(0, 16)}... → ${endpoint}`)
+      }
+    }
   })
 
   peerManager.on('peer:disconnect', ({ pubkeyHex }) => {
